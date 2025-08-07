@@ -12,10 +12,17 @@ public:
     void showStartupMessage();
     void displayTemperature(float temperature);
     void displayError(const char* error);
+    void displayWifiStatus();
+    void clearFullScreen();
+    void displayErrorHalt(const char* message);
+
 
 private:
     // It no longer owns the tft object, it just holds a reference
     Adafruit_ST7789& tft;
+    float last_temp = -1000.0; // Initialize with a value that won't be read
+    void clearTemperatureArea();
+    void clearWifiArea();
 };
 
 #endif // DISPLAY_MANAGER_H

@@ -13,4 +13,8 @@
 #define THERMOCOUPLE_MISO 37
 #define THERMOCOUPLE_SCK 36
 
+// WiFi Access Point credentials
+#define WIFI_SSID "PyroVue"
+#define WIFI_PASSWORD "pyrovue123"
+
 #endif // CONFIG_H
