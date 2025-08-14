@@ -3,7 +3,8 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
-.esp32StartupGuide.md
-.GEMINI.md
-.projectbrief.md
-.memory-bank
+esp32StartupGuide.md
+GEMINI.md
+projectbrief.md
+memory-bank/
+UI-integration/

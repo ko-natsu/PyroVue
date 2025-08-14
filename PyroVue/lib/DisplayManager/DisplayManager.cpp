@@ -74,19 +74,18 @@ void DisplayManager::clearWifiArea() {
 }
 
 
-void DisplayManager::displayWifiStatus() {
+void DisplayManager::displayNetworkStatus(int clientCount) {
     clearWifiArea();
     tft.setCursor(10, 58);
 
     tft.setTextColor(ST77XX_WHITE);
     tft.setTextSize(2);
     tft.println("WiFi Status:");
-    int numClients = WiFi.softAPgetStationNum();
-    if (numClients > 0) {
+    if (clientCount > 0) {
         tft.setTextColor(ST77XX_GREEN);
         tft.print("Connected");
         tft.print(" (");
-        tft.print(numClients);
+        tft.print(clientCount);
         tft.print(")");
     } else {
         tft.setTextColor(ST77XX_RED);

@@ -35,7 +35,7 @@ void StatusManager::handleStateChange(SystemState newState) {
     // If we are recovering from any fault state back to normal
     if (newState == STATE_NORMAL && previousState != STATE_NORMAL) {
         displayManager.clearFullScreen();
-        displayManager.displayWifiStatus(); // Redraw wifi status after clearing
+        displayManager.displayNetworkStatus(0); // Redraw wifi status after clearing
     }
 
     // Display the specific error message for the new fault state

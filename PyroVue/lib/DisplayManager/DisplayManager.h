@@ -12,7 +12,7 @@ public:
     void showStartupMessage();
     void displayTemperature(float temperature);
     void displayError(const char* error);
-    void displayWifiStatus();
+    void displayNetworkStatus(int clientCount);
     void clearFullScreen();
     void displayErrorHalt(const char* message);
 

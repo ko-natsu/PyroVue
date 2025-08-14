@@ -14,7 +14,13 @@
 #define THERMOCOUPLE_SCK 36
 
 // WiFi Access Point credentials
-#define WIFI_SSID "PyroVue"
-#define WIFI_PASSWORD "pyrovue123"
+#define WIFI_SSID                 "Kiln-AP"
+#define WIFI_PASSWORD             "kiln-password"
+#define AP_CHANNEL                6
+#define WS_MAX_CLIENTS            4
+#define SAMPLE_HZ                 2          // sensor read rate
+#define HISTORY_LEN               1200       // ~10 min @ 2 Hz
+#define UI_HISTORY_ON_CONNECT     300        // send last 2.5 min on connect
+#define PROTOCOL_VERSION          "lv1"
 
 #endif // CONFIG_H
