@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "DisplayManager.h"
 #include "Adafruit_MAX31855.h"
+#include "protocol.h"
 
 // Enum to represent the system's operational state
 enum SystemState {

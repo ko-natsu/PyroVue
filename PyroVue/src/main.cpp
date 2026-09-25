@@ -1,109 +1,150 @@
 #include <Arduino.h>
-#include <SPI.h>
-#include "Adafruit_MAX31855.h"
-#include "Adafruit_ST7789.h"
+#include <ArduinoJson.h>
 #include "config.h"
 #include "protocol.h"
+#include "SensorService.h"
+#include "RunManager.h"
+#include "HistoryStore.h"
+#include "NetworkManager.h"
+#include "LittleFsHistoryPersistence.h"
+#include "PresetManager.h"
+
+#if defined(PYROVUE_HAS_DISPLAY)
+#include <SPI.h>
+#include "Adafruit_ST7789.h"
 #include "DisplayManager.h"
 #include "StatusManager.h"
-#include "TelemetryBuffer.h"
-#include "NetworkManager.h"
-#include "PresetManager.h"
-#include <ArduinoJson.h>
+#endif
 
-// --- Hardware SPI Bus Declaration for Thermocouple ---
-SPIClass spi_thermo(FSPI);
+#if defined(ARDUINO)
+#if defined(ARDUINO_ARCH_ESP8266)
+#include <EEPROM.h>
+class PreferencesRunIdStore : public IRunIdStore {
+public:
+    void begin() { EEPROM.begin(8); }
+    bool loadRunId(uint32_t& out) {
+        EEPROM.get(0, out);
+        return out != 0 && out != 0xffffffffUL;
+    }
+    bool saveRunId(uint32_t id) {
+        EEPROM.put(0, id);
+        return EEPROM.commit();
+    }
+};
+#else
+#include <Preferences.h>
+class PreferencesRunIdStore : public IRunIdStore {
+public:
+    void begin() { preferences.begin("pyrovue", false); }
+    bool loadRunId(uint32_t& out) override {
+        if (!preferences.isKey("runId")) return false;
+        out = preferences.getUInt("runId", 0);
+        return out != 0;
+    }
+    bool saveRunId(uint32_t id) override { return preferences.putUInt("runId", id) == sizeof(uint32_t); }
+private:
+    Preferences preferences;
+};
+#endif
 
-// --- Global Object Declarations ---
+#if defined(PYROVUE_HAS_DISPLAY)
+SPIClass spiDisplay(FSPI);
 Adafruit_ST7789 tft(TFT_CS, TFT_DC, TFT_RST);
-Adafruit_MAX31855 thermocouple(THERMOCOUPLE_CS, &spi_thermo);
 DisplayManager displayManager(tft);
 StatusManager statusManager(displayManager);
-TelemetryBuffer telemetryBuffer;
+#endif
+
+PreferencesRunIdStore runIdStore;
+Max31855Sensor thermocouple;
+RunManager runManager(&runIdStore);
+LittleFsHistoryPersistence historyPersistence;
+#if defined(ARDUINO_ARCH_ESP8266)
+TempSample rawStorage[ESP8266_RAW_HISTORY_CAPACITY];
+#else
+TempSample rawStorage[RAW_HISTORY_CAPACITY];
+#endif
+CoarseSample coarseStorage[COARSE_HISTORY_CAPACITY];
+HistoryStore historyStore(rawStorage,
+#if defined(ARDUINO_ARCH_ESP8266)
+                          ESP8266_RAW_HISTORY_CAPACITY,
+#else
+                          RAW_HISTORY_CAPACITY,
+#endif
+                          coarseStorage, COARSE_HISTORY_CAPACITY, COARSE_BUCKET_MS);
 PresetManager presetManager;
-NetworkManager networkManager(telemetryBuffer, presetManager);
-
-// --- Timers ---
-unsigned long lastSampleTime = 0;
-unsigned long lastStatusTime = 0;
-const unsigned long sampleInterval = 1000 / SAMPLE_HZ;
-const unsigned long statusInterval = 1000;
-
-// --- Command Handler ---
-void handleCommand(const String& cmd) {
-    Serial.print("Command received: ");
-    Serial.println(cmd);
-
-    JsonDocument doc;
-    deserializeJson(doc, cmd);
-    const char* type = doc["type"];
-
-    if (strcmp(type, "preset") == 0) {
-        String preset = doc["value"];
-        presetManager.setPreset(preset);
-    }
+NetworkManager networkManager(runManager, historyStore, presetManager);
+uint32_t persistedBucketMs = 0xffffffffUL;
+static void persistLatestCoarse() {
+    const size_t count = historyStore.coarseCount();
+    if (count == 0) return;
+    CoarseSample sample{};
+    if (!historyStore.coarseAt(count - 1, sample) || sample.ms == persistedBucketMs) return;
+    if (historyPersistence.append(sample)) persistedBucketMs = sample.ms;
 }
 
-// --- Main Program ---
+class SampleRouter : public ISampleSink {
+public:
+    void onSample(const TempSample& sample) override {
+        historyStore.push(sample);
+        persistLatestCoarse();
+        networkManager.onNewSample(sample);
+#if defined(PYROVUE_HAS_DISPLAY)
+        statusManager.update(sample.tempC, sample.fault);
+#endif
+    }
+};
+
+SampleRouter sampleRouter;
+SensorService sensorService(thermocouple, runManager, sampleRouter, SAMPLE_HZ);
+
+static void handleCommand(const String& command) {
+    JsonDocument doc;
+    if (deserializeJson(doc, command) != DeserializationError::Ok || !doc["type"].is<const char*>()) return;
+    const char* type = doc["type"];
+    if (strcmp(type, "preset") == 0 && doc["value"].is<const char*>()) {
+        presetManager.setPreset(doc["value"].as<const char*>());
+    } else if (strcmp(type, "run.start") == 0) {
+        if (runManager.startRun(millis()) == RunManager::START_STARTED) {
+            historyStore.clear(runManager.runId());
+            persistedBucketMs = 0xffffffffUL;
+            historyPersistence.startRun(runManager.runId(), COARSE_BUCKET_MS);
+        }
+    } else if (strcmp(type, "run.stop") == 0) {
+        if (runManager.stopRun() == RunManager::STOP_OK) {
+            historyStore.flush();
+            persistLatestCoarse();
+            historyPersistence.flush();
+        }
+    }
+}
+#endif
+
 void setup() {
-  Serial.begin(115200);
-  Serial.println("PyroVue Initializing...");
-
-  // --- Initialize Managers ---
-  presetManager.begin();
-
-  // --- Initialize Hardware ---
-  spi_thermo.begin(THERMOCOUPLE_SCK, THERMOCOUPLE_MISO, THERMOCOUPLE_MOSI);
-  if (!thermocouple.begin()) {
-    Serial.println("ERROR: Thermocouple initialization failed!");
-    while (1) delay(10); // Halt
-  }
-  Serial.println("Thermocouple Initialized.");
-
-  tft.init(135, 240);
-  tft.setRotation(1);
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);
-  Serial.println("TFT Initialized.");
-
-  // --- Initial Display Setup ---
-  displayManager.begin();
-  displayManager.showStartupMessage();
-  delay(2000);
-  displayManager.clearFullScreen(); // Clear startup message
-
-  // --- Network Setup ---
-  networkManager.begin();
-  networkManager.onCommand = handleCommand;
-
-  Serial.println("Setup Complete.");
+    Serial.begin(115200);
+#if defined(ARDUINO)
+    runIdStore.begin();
+    runManager.begin(millis());
+    historyPersistence.begin(historyStore);
+    presetManager.begin();
+#if defined(PYROVUE_HAS_DISPLAY)
+    tft.init(135, 240);
+    tft.setRotation(1);
+    pinMode(TFT_BL, OUTPUT);
+    digitalWrite(TFT_BL, HIGH);
+    displayManager.begin();
+    displayManager.showStartupMessage();
+    delay(500);
+    displayManager.clearFullScreen();
+#endif
+    if (!sensorService.begin()) Serial.println("ERROR: Thermocouple initialization failed");
+    networkManager.onCommand = handleCommand;
+    networkManager.begin();
+#endif
 }
 
 void loop() {
-  // --- Timed Sensor Reading ---
-  if (millis() - lastSampleTime >= sampleInterval) {
-    lastSampleTime = millis();
-
-    // 1. Read sensor data
-    double c = thermocouple.readCelsius();
-    uint8_t fault = thermocouple.readError();
-
-    // 2. Create a sample
-    TempSample s = {lastSampleTime, (float)c, fault};
-
-    // 3. Push to buffers and managers
-    telemetryBuffer.push(s);
-    networkManager.onNewSample(s);
-    statusManager.update(c, fault);
-
-  }
-
-  // --- Timed Status Update ---
-  if (millis() - lastStatusTime >= statusInterval) {
-      lastStatusTime = millis();
-      displayManager.displayNetworkStatus(networkManager.clientCount());
-  }
-
-  // --- Handle Network Clients ---
-  networkManager.loop();
+#if defined(ARDUINO)
+    sensorService.tick(millis());
+    networkManager.loop();
+#endif
 }

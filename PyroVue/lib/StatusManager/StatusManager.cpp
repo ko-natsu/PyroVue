@@ -9,14 +9,11 @@ StatusManager::StatusManager(DisplayManager& displayMgr)
 
 void StatusManager::update(double tempCelsius, uint8_t fault) {
     // Determine the new state based on sensor readings
-    SystemState newState = STATE_NORMAL; // Assume normal unless a fault is found
-    if (fault) {
-        if (fault & MAX31855_FAULT_OPEN) newState = STATE_FAULT_OPEN;
-        else if (fault & MAX31855_FAULT_SHORT_GND) newState = STATE_FAULT_GND;
-        else if (fault & MAX31855_FAULT_SHORT_VCC) newState = STATE_FAULT_VCC;
-    } else if (isnan(tempCelsius)) {
-        newState = STATE_FAULT_NAN;
-    }
+    SystemState newState = STATE_NORMAL;
+    if (fault & SENSOR_FAULT_OPEN) newState = STATE_FAULT_OPEN;
+    else if (fault & SENSOR_FAULT_SHORT_GND) newState = STATE_FAULT_GND;
+    else if (fault & SENSOR_FAULT_SHORT_VCC) newState = STATE_FAULT_VCC;
+    else if (fault & SENSOR_FAULT_NAN || isnan(tempCelsius)) newState = STATE_FAULT_NAN;
 
     // Update the internal state and trigger actions only if the state has changed
     if (newState != currentState) {
