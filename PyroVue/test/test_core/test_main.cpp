@@ -61,6 +61,31 @@ static void test_history_wrap_and_bucket_aggregation() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 11.0f, bucket.maximumC);
 }
 
+static void test_idle_samples_update_latest_without_history() {
+    TempSample raw[3];
+    CoarseSample coarse[4];
+    HistoryStore history(raw, 3, coarse, 4, 1000);
+    TempSample latest{};
+    TEST_ASSERT_FALSE(history.latestReading(latest));
+
+    history.push({0, 0, 0, 20.5f, 0});
+    TEST_ASSERT_TRUE(history.latestReading(latest));
+    TEST_ASSERT_EQUAL_UINT32(0, latest.runId);
+    TEST_ASSERT_EQUAL_UINT32(0, latest.seq);
+    TEST_ASSERT_EQUAL_UINT32(0, latest.ms);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 20.5f, latest.tempC);
+    TEST_ASSERT_EQUAL_UINT32(0, history.rawCount());
+    TEST_ASSERT_EQUAL_UINT32(0, history.coarseCount());
+
+    history.push({0, 0, 0, NAN, SENSOR_FAULT_NAN});
+    TEST_ASSERT_TRUE(history.latestReading(latest));
+    TEST_ASSERT_EQUAL_UINT32(0, latest.ms);
+    TEST_ASSERT_TRUE(isnan(latest.tempC));
+    TEST_ASSERT_EQUAL_UINT32(SENSOR_FAULT_NAN, latest.fault);
+    TEST_ASSERT_EQUAL_UINT32(0, history.rawCount());
+    TEST_ASSERT_EQUAL_UINT32(0, history.coarseCount());
+}
+
 static void test_sensor_service_cadence_and_fault_normalization() {
     MemoryRunStore store;
     RunManager run(&store);
@@ -97,11 +122,11 @@ static void test_persistence_codec_recovers_valid_prefix() {
     TEST_ASSERT_EQUAL_UINT32(1, scan.validCount);
     TEST_ASSERT_EQUAL_UINT32(coarsecodec::kHeaderSize + coarsecodec::kRecordSize, scan.appendOffset);
 }
-
 void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_run_rollover_and_lifecycle);
     RUN_TEST(test_history_wrap_and_bucket_aggregation);
+    RUN_TEST(test_idle_samples_update_latest_without_history);
     RUN_TEST(test_sensor_service_cadence_and_fault_normalization);
     RUN_TEST(test_persistence_codec_recovers_valid_prefix);
     UNITY_END();

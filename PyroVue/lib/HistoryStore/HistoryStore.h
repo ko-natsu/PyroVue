@@ -15,6 +15,7 @@ public:
     void push(const TempSample& sample);
     void flush();
     void restoreCoarse(const CoarseSample& sample);
+    bool latestReading(TempSample& out) const;
     size_t rawCount() const;
     bool rawAt(size_t oldestIndex, TempSample& out) const;
     size_t coarseCount() const;
@@ -44,6 +45,8 @@ private:
     uint8_t bucketFault;
     bool bucketOpen;
 
+    TempSample latestPhysicalSample;
+    bool hasLatestPhysicalSample; // Survives clear(): run resets must not erase current sensor readout.
     void finalizeBucket();
 };
 

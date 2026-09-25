@@ -1,0 +1,20 @@
+{
+  "name": "pyrovue-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Offline browser frontend for the PyroVue kiln telemetry firmware",
+  "scripts": {
+    "test": "node --test web/test/*.test.js",
+    "typecheck": "tsc --project web/tsconfig.json",
+    "lint": "eslint web/src/js",
+    "build": "python web/make_ui_header.py",
+    "check:bundle": "python web/make_ui_header.py --check"
+  },
+  "devDependencies": {
+    "eslint": "^10.11.0",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

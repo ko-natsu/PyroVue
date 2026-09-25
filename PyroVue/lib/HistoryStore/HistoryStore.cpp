@@ -35,7 +35,8 @@ HistoryStore::HistoryStore(TempSample* rawStorage, size_t rawCapacity,
     : raw(rawStorage), rawCap(rawCapacity), rawHead(0), rawSize(0),
       coarse(coarseStorage), coarseCap(coarseCapacity), coarseHead(0), coarseSize(0),
       resolution(bucketMs), currentRun(0), currentBucketMs(0), bucketSum(0),
-      bucketCount(0), bucketMin(0), bucketMax(0), bucketFault(0), bucketOpen(false) {}
+      bucketCount(0), bucketMin(0), bucketMax(0), bucketFault(0), bucketOpen(false),
+      latestPhysicalSample{}, hasLatestPhysicalSample(false) {}
 
 void HistoryStore::clear(uint32_t run) {
     HistoryGuard guard;
@@ -71,6 +72,8 @@ void HistoryStore::flush() {
 
 void HistoryStore::push(const TempSample& sample) {
     HistoryGuard guard;
+    latestPhysicalSample = sample;
+    hasLatestPhysicalSample = true;
     if (sample.runId == 0) return;
     if (sample.runId != currentRun) {
         rawHead = rawSize = coarseHead = coarseSize = 0;
@@ -112,6 +115,13 @@ void HistoryStore::push(const TempSample& sample) {
     bucketSum += static_cast<double>(sample.tempC);
     ++bucketCount;
 }
+bool HistoryStore::latestReading(TempSample& out) const {
+    HistoryGuard guard;
+    if (!hasLatestPhysicalSample) return false;
+    out = latestPhysicalSample;
+    return true;
+}
+
 
 void HistoryStore::restoreCoarse(const CoarseSample& sample) {
     HistoryGuard guard;

@@ -8,3 +8,5 @@ GEMINI.md
 projectbrief.md
 memory-bank/
 UI-integration/
+/node_modules/
+/web/dist/

@@ -147,12 +147,23 @@ void NetworkManager::sendSampleJson(AsyncWebSocketClient* client, const TempSamp
     client->text(json);
 }
 
+void NetworkManager::broadcastRunState() {
+    JsonDocument doc;
+    doc["type"] = "state";
+    doc["protocol"] = PROTOCOL_VERSION;
+    doc["runId"] = runManager.runId();
+    doc["runActive"] = runManager.active();
+    String json;
+    serializeJson(doc, json);
+    ws.textAll(json);
+}
+
 void NetworkManager::sendCommand(const uint8_t* data, size_t len) {
     if (!onCommand || len == 0 || len > 256) return;
     char command[257];
     memcpy(command, data, len);
     command[len] = '\0';
-    onCommand(String(command));
+    if (onCommand(String(command))) broadcastRunState();
 }
 
 void NetworkManager::handleWsEvent(AsyncWebSocketClient* client, AwsEventType type,
@@ -185,8 +196,9 @@ void NetworkManager::begin() {
         doc["runId"] = runManager.runId();
         doc["runActive"] = runManager.active();
         TempSample sample{};
-        if (historyStore.rawCount() != 0 && historyStore.rawAt(historyStore.rawCount() - 1, sample)) {
+        if (historyStore.latestReading(sample)) {
             doc["type"] = "sample";
+            doc["runId"] = sample.runId;
             doc["seq"] = sample.seq;
             doc["ms"] = sample.ms;
             doc["temp"] = sample.tempC;
@@ -231,9 +243,8 @@ void NetworkManager::begin() {
 void NetworkManager::loop() {
     ws.cleanupClients(WS_MAX_CLIENTS);
 }
-
 void NetworkManager::onNewSample(const TempSample& sample) {
-    if (sample.runId == 0 || replaying || ws.count() == 0) return;
+    if (replaying || ws.count() == 0) return;
     JsonDocument doc;
     doc["type"] = "sample";
     doc["protocol"] = PROTOCOL_VERSION;

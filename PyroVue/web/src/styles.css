@@ -1,0 +1,696 @@
+/* PyroVue responsive shell — Milestone 2
+   Soft technical separation: hairlines, translucency, spacing. No card grid. */
+
+:root {
+  --bg: #f5eee1;
+  --bg-deep: #ece1cc;
+  --surface: rgba(255, 252, 244, 0.6);
+  --surface-strong: rgba(255, 253, 248, 0.85);
+  --fg: #241d16;
+  --fg-dim: #6f6355;
+  --fg-faint: #a2937f;
+  --hairline: rgba(36, 29, 22, 0.16);
+  --hairline-strong: rgba(36, 29, 22, 0.34);
+  --accent: #d9542b;
+  --ok: #3d7a4f;
+  --warn: #a66a12;
+  --err: #b3322e;
+  --state-glow: rgba(217, 84, 43, 0.14);
+  --graph-well: rgba(236, 225, 204, 0.5);
+  --tap: 44px;
+  --pv-graph-grid: rgba(36, 29, 22, 0.14);
+  --pv-graph-axis: #6f6355;
+  --pv-graph-raw: #d9542b;
+  --pv-graph-coarse: #bd8437;
+  --pv-graph-band: rgba(189, 132, 55, 0.18);
+  --pv-graph-marker: #8e4c9e;
+  --pv-graph-inspect: #6f6355;
+  --pv-graph-inspectText: #26231f;
+  --pv-graph-rateCool: #74a99a;
+  --pv-graph-rateMid: #d1b94d;
+  --pv-graph-rateHot: #d96540;
+
+  --font-display: "DIN Alternate", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --font-ui: "Avenir Next", "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
+}
+
+:root[data-theme="dark"] {
+  --bg: #10131a;
+  --bg-deep: #0b0e14;
+  --surface: rgba(23, 28, 39, 0.6);
+  --surface-strong: rgba(28, 34, 47, 0.85);
+  --fg: #e8e4da;
+  --fg-dim: #9aa0ac;
+  --fg-faint: #5d6470;
+  --hairline: rgba(232, 228, 218, 0.14);
+  --hairline-strong: rgba(232, 228, 218, 0.3);
+  --accent: #ff7a45;
+  --ok: #7fd6a0;
+  --warn: #e0a83f;
+  --err: #ff6b5e;
+  --state-glow: rgba(255, 122, 69, 0.16);
+  --graph-well: rgba(16, 20, 29, 0.6);
+  --pv-graph-grid: rgba(232, 228, 218, 0.12);
+  --pv-graph-axis: #9aa0ac;
+  --pv-graph-raw: #ff7a45;
+  --pv-graph-coarse: #d4a253;
+  --pv-graph-band: rgba(212, 162, 83, 0.17);
+  --pv-graph-marker: #ca7edb;
+  --pv-graph-inspect: #c4cad3;
+  --pv-graph-inspectText: #202631;
+  --pv-graph-rateCool: #558e86;
+  --pv-graph-rateMid: #b59c3e;
+  --pv-graph-rateHot: #c75239;
+}
+
+/* No-JS fallback: follow the OS preference until app.js sets data-theme. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg: #10131a;
+    --bg-deep: #0b0e14;
+    --surface: rgba(23, 28, 39, 0.6);
+    --surface-strong: rgba(28, 34, 47, 0.85);
+    --fg: #e8e4da;
+    --fg-dim: #9aa0ac;
+    --fg-faint: #5d6470;
+    --hairline: rgba(232, 228, 218, 0.14);
+    --hairline-strong: rgba(232, 228, 218, 0.3);
+    --accent: #ff7a45;
+    --ok: #7fd6a0;
+    --warn: #e0a83f;
+    --err: #ff6b5e;
+    --state-glow: rgba(255, 122, 69, 0.16);
+    --graph-well: rgba(16, 20, 29, 0.6);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100dvh;
+  background:
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+.app {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- Masthead ---------- */
+
+.masthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--hairline);
+  position: relative;
+  overflow: hidden;
+}
+
+.masthead::after {
+  /* ACTIVE ambience: soft heat tint dispersed through the top strip. */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 8%, var(--state-glow) 45%, transparent 92%);
+  opacity: 0;
+  transition: opacity 0.8s ease;
+  pointer-events: none;
+}
+
+.app[data-run="active"] .masthead::after {
+  opacity: 1;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+}
+
+.brand-glyph {
+  width: 26px;
+  height: 26px;
+  color: var(--accent);
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: 0.34em;
+}
+
+.mast-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  position: relative;
+}
+
+.run-id {
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+}
+
+.run-state {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  padding: 5px 10px 4px;
+  border: 1px solid var(--hairline-strong);
+  color: var(--fg-dim);
+}
+
+.run-state[data-state="active"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.clock {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+}
+
+/* ---------- Stage layout (iPad landscape primary) ---------- */
+
+.stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+  grid-template-areas: "readout graph";
+  gap: 0;
+}
+
+.readout {
+  grid-area: readout;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 26px 26px 20px;
+  border-right: 1px solid var(--hairline);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.readout::before {
+  content: "";
+  position: absolute;
+  inset: -20% -40% auto auto;
+  width: 120%;
+  height: 60%;
+  background: radial-gradient(closest-side, var(--state-glow), transparent 78%);
+  opacity: 0;
+  transition: opacity 1s ease;
+  pointer-events: none;
+}
+
+.app[data-run="active"] .readout::before {
+  opacity: 1;
+}
+
+/* ---------- Dominant temperature ---------- */
+
+.temperature {
+  position: relative;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(72px, 9.5vw, 148px);
+  line-height: 0.92;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: baseline;
+  gap: 0.08em;
+}
+
+.temp-unit {
+  font-size: 0.3em;
+  font-weight: 700;
+  color: var(--fg-dim);
+  letter-spacing: 0.04em;
+}
+
+.rate {
+  position: relative;
+  margin: 0;
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  font-size: 20px;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+}
+
+.rate strong {
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.rate[data-quality="poor"],
+.rate[data-quality="sparse"] {
+  color: var(--fg-faint);
+}
+
+.status-lines {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--hairline);
+}
+
+.status-line {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: var(--fg-dim);
+}
+
+.status-line[data-tone="ok"] { color: var(--ok); }
+.status-line[data-tone="warn"] { color: var(--warn); }
+.status-line[data-tone="error"] { color: var(--err); }
+
+.status-fault {
+  color: var(--err);
+  font-weight: 600;
+}
+
+/* ---------- Cone placeholder (model seam lands in Milestone 6) ---------- */
+
+.cone {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hairline);
+  color: var(--fg-dim);
+  min-height: 64px;
+}
+
+.cone[data-model="placeholder"] {
+  color: var(--fg-faint);
+}
+
+.cone-glyph {
+  width: 56px;
+  height: 44px;
+  flex: none;
+}
+
+.cone-label {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--fg);
+}
+
+.cone[data-model="placeholder"] .cone-label {
+  color: var(--fg-faint);
+}
+
+/* ---------- Graph panel ---------- */
+
+.graph-panel {
+  grid-area: graph;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 18px 22px 16px;
+  gap: 10px;
+}
+
+.graph-frame {
+  position: relative;
+  flex: 1;
+  min-height: 260px;
+  border: 1px solid var(--hairline);
+  background: var(--graph-well);
+  overflow: hidden;
+}
+
+.graph-frame canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  min-height: 32px;
+}
+
+.inspect-line {
+  margin: 0 auto 0 0;
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  color: var(--fg-dim);
+}
+
+/* ---------- Session row ---------- */
+
+.session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+  flex-wrap: wrap;
+}
+
+.timing {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.elapsed {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(26px, 3.2vw, 40px);
+  letter-spacing: 0.04em;
+}
+
+.started {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* ---------- Buttons: tactile, thin-lined, touch-first ---------- */
+
+.btn {
+  appearance: none;
+  min-height: var(--tap);
+  min-width: var(--tap);
+  padding: 10px 18px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--surface-strong);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+}
+
+.btn:active {
+  transform: translateY(1px);
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.08);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  transform: none;
+}
+
+.btn:focus-visible,
+.expand-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn-primary[data-intent="start"] {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.btn-primary[data-intent="stop"] {
+  border-color: var(--err);
+  color: var(--err);
+}
+
+.btn-primary[data-intent="pending"] {
+  border-color: var(--hairline-strong);
+  color: var(--fg-dim);
+}
+
+.btn-ghost {
+  background: transparent;
+  box-shadow: none;
+  border-color: var(--hairline);
+  color: var(--fg-dim);
+  font-weight: 500;
+}
+
+.btn-compact {
+  min-height: var(--tap);
+  min-width: var(--tap);
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+#themeBtn {
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* ---------- Toast ---------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%) translateY(8px);
+  max-width: min(90vw, 480px);
+  padding: 10px 16px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--surface-strong);
+  color: var(--fg);
+  font-size: 13px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ---------- Expanded graph focus mode ---------- */
+
+.app[data-expanded="true"] .stage {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "readout"
+    "graph";
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.app[data-expanded="true"] .readout {
+  flex-direction: row;
+  align-items: center;
+  gap: 26px;
+  padding: 10px 22px;
+  border-right: none;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.app[data-expanded="true"] .readout::before {
+  inset: auto -10% -80% auto;
+  width: 60%;
+  height: 220%;
+}
+
+.app[data-expanded="true"] .temperature {
+  font-size: clamp(40px, 6vw, 72px);
+}
+
+.app[data-expanded="true"] .rate,
+.app[data-expanded="true"] .cone {
+  display: none;
+}
+
+.app[data-expanded="true"] .status-lines {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+  flex-direction: row;
+  gap: 18px;
+  margin-left: auto;
+}
+
+.app[data-expanded="true"] .graph-panel {
+  padding-top: 12px;
+}
+
+/* ---------- iPhone / narrow reflow ---------- */
+
+@media (max-width: 820px) {
+  .masthead {
+    padding: 10px 14px;
+    gap: 10px;
+  }
+
+  .wordmark {
+    font-size: 14px;
+    letter-spacing: 0.26em;
+  }
+
+  .mast-status {
+    gap: 9px;
+  }
+
+  .run-id {
+    font-size: 12px;
+  }
+
+  .clock {
+    font-size: 13px;
+  }
+
+  .stage {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "readout"
+      "graph";
+  }
+
+  .readout {
+    border-right: none;
+    border-bottom: 1px solid var(--hairline);
+    padding: 16px 14px 14px;
+    gap: 12px;
+  }
+
+  .temperature {
+    font-size: clamp(56px, 17vw, 96px);
+  }
+
+  .status-lines {
+    margin-top: 0;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+  }
+
+  .cone {
+    min-height: 52px;
+  }
+
+  .graph-panel {
+    padding: 12px 12px 12px;
+  }
+
+  .graph-frame {
+    min-height: 240px;
+  }
+
+  .session-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .timing {
+    justify-content: space-between;
+    align-items: baseline;
+  }
+
+  .elapsed {
+    font-size: 30px;
+  }
+
+  .controls {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 8px;
+  }
+
+  .controls .btn-primary {
+    min-height: 48px;
+  }
+}
+
+@media (max-width: 400px) {
+  .masthead {
+    gap: 8px;
+  }
+
+  .run-id {
+    font-size: 11px;
+  }
+
+  .controls {
+    grid-template-columns: 1fr;
+  }
+
+  .controls .btn {
+    width: 100%;
+  }
+}
+
+/* Expanded mode collapses to the same single-column rhythm on narrow screens. */
+@media (max-width: 820px) {
+  .app[data-expanded="true"] .readout {
+    flex-wrap: wrap;
+    gap: 10px 18px;
+  }
+
+  .app[data-expanded="true"] .status-lines {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .masthead::after,
+  .readout::before,
+  .toast,
+  .btn {
+    transition: none;
+  }
+}

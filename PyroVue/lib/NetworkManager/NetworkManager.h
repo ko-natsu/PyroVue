@@ -17,7 +17,7 @@ public:
     void loop();
     void onNewSample(const TempSample& sample);
     size_t clientCount() const;
-    std::function<void(const String&)> onCommand;
+    std::function<bool(const String&)> onCommand;
 
 private:
     AsyncWebServer server;
@@ -34,6 +34,7 @@ private:
     void sendCommand(const uint8_t* data, size_t len);
     void sendStateJson(AsyncWebSocketClient* client);
     void sendSampleJson(AsyncWebSocketClient* client, const TempSample& sample);
+    void broadcastRunState();
 };
 
 #endif

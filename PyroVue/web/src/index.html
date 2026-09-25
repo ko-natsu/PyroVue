@@ -4,380 +4,79 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
-  <title>Kiln Live</title>
-  <style>
-    :root{
-      --bg: #0b0b0c; --fg: #eaeaea; --muted:#9aa0a6; --card:#151518; --accent:#5ec7a2; --warn:#ffb020; --err:#ff4d4f; --ok:#9be38a;
-    }
-    @media (prefers-color-scheme: light){
-      :root{ --bg:#fcfcfd; --fg:#0d0f12; --muted:#475467; --card:#f4f5f7; --accent:#0ea5e9; --warn:#b45309; --err:#e11d48; --ok:#16a34a; }
-    }
-    html, body { height: 100%; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji; background: var(--bg); color: var(--fg); }
-    .wrap { min-height: 100%; display: flex; flex-direction: column; }
-    header { padding: 16px 16px 8px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
-    .brand { display:flex; align-items:center; gap:10px; }
-    .badge { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background: var(--card); color: var(--muted); font-size: 12px; }
-    .dot { width:10px; height:10px; border-radius:50%; background: var(--muted); box-shadow:0 0 0 2px #00000020 inset; }
-    .dot.ok{ background: var(--ok);} .dot.err{ background: var(--err);} .dot.warn{ background: var(--warn);}    
-    main { padding: 0 16px 16px; display:flex; flex-direction:column; gap:12px; }
-    .card { background: var(--card); border-radius: 16px; padding: 12px; box-shadow: 0 6px 20px #00000025; }
-    .big { font-size: clamp(44px, 10vw, 64px); font-weight: 700; letter-spacing: -0.02em; }
-    .sub { color: var(--muted); font-size: 14px; }
-    .row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-    .actions { display:flex; gap:8px; flex-wrap:wrap; }
-    button { appearance:none; border:none; border-radius: 12px; padding:10px 12px; background:#1e1f25; color:#e7e7e7; cursor:pointer; font-size:14px; box-shadow: 0 2px 6px #00000033; }
-    button.ghost { background: transparent; color: var(--muted); box-shadow:none; }
-    button.active { outline: 2px solid var(--accent); color: var(--fg); }
-    .unit-toggle { padding: 8px 10px; }
-    canvas { width: 100%; height: 220px; display:block; }
-    .legend { display:flex; align-items:center; gap:10px; color: var(--muted); font-size:12px; }
-    .pill { padding:4px 8px; border-radius:999px; background:#00000020; }
-    .footer { color: var(--muted); font-size: 12px; padding: 4px 16px 16px; text-align:center; }
-    .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; background:#111; color:#fff; padding:10px 14px; border-radius:12px; box-shadow:0 10px 30px #00000066; opacity:0; pointer-events:none; transition:opacity .2s ease, transform .2s ease; }
-    .toast.show { opacity:1; transform: translateX(-50%) translateY(0); }
-  </style>
+  <title>PyroVue</title>
+  <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div class="brand">
-      <div class="badge"><span class="dot" id="connDot"></span><span id="connText">Connecting…</span></div>
-    </div>
-    <div class="actions">
-      <button class="unit-toggle" id="unitBtn" title="Toggle °C/°F">°C</button>
-    </div>
-  </header>
-
-  <main>
-    <section class="card">
-      <div class="row">
-        <div>
-          <div class="big" id="bigTemp">—.—°C</div>
-          <div class="sub" id="subText">Waiting for data…</div>
-        </div>
-        <div class="legend">
-          <span class="pill" id="ratePill">2 Hz</span>
-          <span class="pill" id="spanPill">Last 5 min</span>
-        </div>
+  <div class="app" id="app" data-run="idle" data-expanded="false">
+    <header class="masthead">
+      <div class="brand">
+        <svg class="brand-glyph" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3 L21 20 H16.6 L12 11.6 L7.4 20 H3 Z" fill="currentColor" />
+        </svg>
+        <span class="wordmark">PYROVUE</span>
       </div>
-      <canvas id="chart" width="600" height="220"></canvas>
-    </section>
-
-    <section class="card">
-      <div class="sub" style="margin-bottom:8px;">Preset ramp rate</div>
-      <div class="actions">
-        <button data-preset="idle">Idle</button>
-        <button data-preset="slow">Slow · 100°C/h</button>
-        <button data-preset="med">Med · 200°C/h</button>
-        <button data-preset="fast">Fast · 400°C/h</button>
-        <button class="ghost" id="csvBtn">Download CSV</button>
+      <div class="mast-status">
+        <span class="run-id" id="runId">Run #&mdash;</span>
+        <span class="run-state" id="runState" data-state="idle">IDLE</span>
+        <time class="clock" id="clock">&ndash;:&ndash;&ndash;</time>
+        <button class="btn btn-ghost btn-compact" id="themeBtn" type="button" aria-label="Toggle light or dark theme">&#9790;</button>
       </div>
-    </section>
-  </main>
+    </header>
 
-  <div class="footer">Kiln Live UI Demo · WS→SSE→Poll with demo fallback</div>
-</div>
-<div class="toast" id="toast"></div>
+    <main class="stage">
+      <section class="readout" aria-label="Current reading">
+        <div class="temperature"><span id="bigTemp">&mdash;</span><span class="temp-unit" id="tempUnit">&deg;C</span></div>
 
-<script>
-(function(){
-  'use strict';
-  // ------- Config -------
-  const MAX_POINTS = 600;            // ~5 min @ 2 Hz
-  const DEFAULT_RATE_HZ = 2;
-  const POLL_MS = 500;               // short-poll fallback
-  const SCALE_MIN_SPAN = 50;         // min temp span for y-axis
-  const DEMO_ACTIVATE_AFTER_MS = 1200; // if no data by then, start demo but keep trying connections
+        <p class="rate" id="rateLine" hidden></p>
 
-  // ------- State -------
-  let unit = (localStorage.getItem('unit') || 'C'); // 'C' or 'F'
-  let rateHz = DEFAULT_RATE_HZ;
-  let channel = 'connecting'; // 'ws' | 'poll' | 'demo' | 'connecting'
-  let data = [];   // {t:ms, c:tempC, f:fault}
-  let lastTickTs = 0;
-  let ws = null, pollTimer = null, demoTimer = null;
-  let selectedPreset = 'idle';
+        <div class="status-lines">
+          <p class="status-line" id="connLine" aria-live="polite">Connecting&hellip;</p>
+          <p class="status-line" id="freshLine" aria-live="polite">Waiting for data&hellip;</p>
+          <p class="status-line status-fault" id="faultLine" aria-live="assertive" hidden></p>
+        </div>
 
-  // ------- Elements -------
-  const bigTemp = document.getElementById('bigTemp');
-  const subText = document.getElementById('subText');
-  const connDot = document.getElementById('connDot');
-  const connText = document.getElementById('connText');
-  const ratePill = document.getElementById('ratePill');
-  const spanPill = document.getElementById('spanPill');
-  const unitBtn = document.getElementById('unitBtn');
-  const csvBtn = document.getElementById('csvBtn');
-  const toast = document.getElementById('toast');
-  const canvas = document.getElementById('chart');
-  const ctx = canvas.getContext('2d');
+        <div class="cone" id="coneWidget" data-model="placeholder" aria-label="Cone progression">
+          <svg class="cone-glyph" viewBox="0 0 64 48" aria-hidden="true">
+            <path d="M14 44 L30 10 L32 6 L34 10 L50 44" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="5 4" />
+            <path d="M21 44 L32 17 L43 44" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4" />
+          </svg>
+          <span class="cone-label" id="coneLabel">Cone &mdash;</span>
+        </div>
+      </section>
 
-  // HiDPI crispness
-  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-  function resizeCanvas(){
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = Math.round(rect.width * dpr);
-    canvas.height = Math.round(rect.height * dpr);
-  }
-  window.addEventListener('resize', resizeCanvas, {passive:true});
-  resizeCanvas();
+      <section class="graph-panel" aria-label="Temperature history">
+        <div class="graph-frame">
+          <canvas id="chart" role="img" aria-label="Full firing temperature history; touch or drag to inspect points">Temperature history graph</canvas>
+        </div>
 
-  // ------- Utilities -------
-  const fmt = (x) => (Number.isFinite(x) ? x.toFixed(1) : '—.—');
-  const c2f = (c) => (c * 9/5 + 32);
-  const nowMs = () => performance.now();
-  function showToast(msg){
-    toast.textContent = msg; toast.classList.add('show');
-    setTimeout(()=>toast.classList.remove('show'), 1500);
-  }
-  function setPresetUI(name){
-    document.querySelectorAll('button[data-preset]').forEach(b=>{
-      b.classList.toggle('active', b.dataset.preset === name);
-    });
-  }
+        <div class="graph-toolbar">
+          <p class="inspect-line" id="inspectLine" hidden aria-live="polite"></p>
+          <button class="btn btn-ghost btn-compact" id="expandBtn" type="button" aria-pressed="false" aria-controls="chart">Expand</button>
+        </div>
 
-  // ------- Data handling -------
-  let currentRunId = 0;
-  let historySnapshot = null;
-  const seenSamples = new Set();
-  function selectRun(runId){
-    if (runId === currentRunId) return;
-    currentRunId = runId; data.length = 0; seenSamples.clear();
-  }
-  function pushSample(runId, seq, ms, tempC, fault){
-    if (runId !== currentRunId) selectRun(runId);
-    const key = `${runId}:${seq}`;
-    if (seenSamples.has(key)) return;
-    seenSamples.add(key);
-    data.push({t: ms, c: tempC, f: fault|0});
-    if (data.length > MAX_POINTS) data.shift();
-    if (seenSamples.size > MAX_POINTS * 2) seenSamples.delete(seenSamples.values().next().value);
-    lastTickTs = nowMs();
-  }
-  function applyHistory(msg){
-    if (msg.runId !== currentRunId) selectRun(msg.runId);
-    for (const s of (msg.samples || [])) {
-      if (msg.kind === 'coarse') pushSample(msg.runId, `c:${s.ms}`, s.ms, s.avg, s.fault || 0);
-      else pushSample(msg.runId, s.seq, s.ms, s.temp, s.fault || 0);
-    }
-  }
+        <div class="session-row">
+          <div class="timing">
+            <span class="elapsed" id="elapsed">T+--:--:--</span>
+            <span class="started" id="started">Started &mdash;</span>
+          </div>
+          <div class="controls">
+            <button class="btn btn-primary" id="sessionBtn" type="button">Start Session</button>
+            <button class="btn" id="markerBtn" type="button" title="Event markers arrive in a later update">+ Add Marker</button>
+            <button class="btn btn-ghost btn-compact" id="unitBtn" type="button" aria-label="Toggle &deg;C or &deg;F">&deg;C</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
 
-  // ------- Rendering -------
-  function draw(){
-    const W = canvas.width, H = canvas.height;
-    ctx.clearRect(0,0,W,H);
+  <div class="toast" id="toast" role="status"></div>
 
-    // Axes + grid
-    const padL = 40*dpr, padR = 8*dpr, padT = 10*dpr, padB = 24*dpr;
-    const plotW = W - padL - padR; const plotH = H - padT - padB;
-
-    // Time domain: last MAX_POINTS or 5 min window
-    if (data.length === 0){
-      drawAxes(null); requestAnimationFrame(draw); return;
-    }
-    const t0 = data[0].t, t1 = data[data.length-1].t;
-    // Y domain
-    let min = +Infinity, max = -Infinity;
-    for (const s of data){ if (Number.isFinite(s.c)){ min = Math.min(min, s.c); max = Math.max(max, s.c); } }
-    if (!Number.isFinite(min) || !Number.isFinite(max)){ min = 0; max = SCALE_MIN_SPAN; }
-    if (max - min < SCALE_MIN_SPAN){ const mid=(min+max)/2; min=mid-SCALE_MIN_SPAN/2; max=mid+SCALE_MIN_SPAN/2; }
-    // padding
-    const pad = (max-min)*0.08; min -= pad; max += pad;
-
-    // Helpers
-    const xOf = (t)=> padL + ( (t - t0) / (t1 - t0 || 1) ) * plotW;
-    const yOf = (c)=> padT + (1 - ( (c - min) / (max - min || 1) )) * plotH;
-
-    drawAxes({padL,padR,padT,padB, plotW,plotH, min,max, t0,t1, xOf,yOf});
-
-    // Line
-    ctx.lineWidth = 2*dpr; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#0ea5e9';
-    ctx.beginPath();
-    let started = false;
-    for (const s of data){
-      if (!Number.isFinite(s.c)) { started=false; continue; }
-      const x = xOf(s.t), y = yOf(s.c);
-      if (!started){ ctx.moveTo(x,y); started=true; } else { ctx.lineTo(x,y); }
-    }
-    ctx.stroke();
-
-    // Current value marker
-    const last = data[data.length-1];
-    const x = xOf(last.t), y = yOf(last.c);
-    if (Number.isFinite(last.c)){
-      ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(x,y,2.5*dpr,0,Math.PI*2); ctx.fill();
-    }
-
-    requestAnimationFrame(draw);
-  }
-
-  function drawAxes(cfg){
-    const W = canvas.width, H = canvas.height;
-    const cs = getComputedStyle(document.documentElement);
-    const grid = cs.getPropertyValue('--card') || '#1e1f25';
-    ctx.fillStyle = grid; ctx.fillRect(0,0,W,H);
-
-    if (!cfg) return; // no data yet
-
-    const {padL,padR,padT,padB, plotW,plotH, min,max, t0,t1, xOf,yOf} = cfg;
-    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
-    ctx.lineWidth = 1*dpr;
-    ctx.beginPath();
-    // horizontal grid (5 lines)
-    for (let i=0;i<=4;i++){
-      const y = padT + (i/4)*plotH; ctx.moveTo(padL,y); ctx.lineTo(W-padR,y);
-    }
-    ctx.stroke();
-
-    // y labels
-    ctx.fillStyle = 'rgba(255,255,255,0.7)';
-    ctx.font = `${12*dpr}px ui-sans-serif, system-ui`;
-    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-    for (let i=0;i<=4;i++){
-      const c = min + (i/4)*(max-min);
-      const val = unit==='C' ? c : c2f(c);
-      ctx.fillText(val.toFixed(0)+(unit==='C'?'°C':'°F'), padL-8*dpr, padT + (1-i/4)*plotH);
-    }
-
-    // x labels (mm:ss)
-    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-    const secs = Math.max(30, Math.round((t1-t0)/1000/5)); // ~5 ticks
-    const step = Math.max(10, secs);
-    for (let tt = t0; tt <= t1; tt += step*1000){
-      const x = xOf(tt);
-      const s = Math.round((tt - t0)/1000);
-      const m = Math.floor(s/60), ss = s%60;
-      const label = `${m}:${String(ss).padStart(2,'0')}`;
-      ctx.fillText(label, x, H - 6*dpr);
-    }
-  }
-
-  // ------- Connection logic -------
-  function setChannel(name){
-    channel = name;
-    const map = {connecting:['warn','Connecting…'], ws:['ok','WebSocket'], poll:['warn','Polling'], demo:['warn','Demo mode'], error:['err','Error']};
-    const [cls, txt] = map[name] || ['warn',''];
-    connDot.className = 'dot '+cls; connText.textContent = txt;
-  }
-
-  function tryConnect(){
-    // Attempt WebSocket, then diagnostic polling. Start demo only when disconnected.
-    setChannel('connecting');
-    let gotAnyData = false;
-    const demoTimeout = setTimeout(()=>{ if (!gotAnyData) startDemo(); }, DEMO_ACTIVATE_AFTER_MS);
-
-    // WebSocket
-    try {
-      ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws');
-      ws.onopen = ()=>{ /* no-op */ };
-      ws.onmessage = (ev)=>{ gotAnyData = true; handleMessage(ev.data); setChannel('ws'); };
-      ws.onclose = ()=>{ ws=null; if (channel==='ws') setChannel('connecting'); fallbackToPoll(); };
-      ws.onerror = ()=>{ /* handled by close */ };
-    } catch(e){ fallbackToPoll(); }
-    function fallbackToPoll(){
-      if (pollTimer) return;
-      setChannel('poll');
-      pollTimer = setInterval(async()=>{
-        try{ const r = await fetch('/api/now',{cache:'no-store'}); if (!r.ok) throw 0; const j = await r.json(); gotAnyData = true; handleObject(j); }
-        catch(e){ /* stay quiet */ }
-      }, POLL_MS);
-    }
-  }
-
-  function handleMessage(raw){
-    try{ const msg = JSON.parse(raw); handleObject(msg); } catch(e){ /* ignore */ }
-  }
-  function handleObject(msg){
-    switch(msg.type){
-      case 'hello':
-        rateHz = msg.sampleHz || rateHz; currentRunId = msg.runId || 0;
-        ratePill.textContent = `${rateHz} Hz`;
-        if (msg.recentWindowMs) spanPill.textContent = `Last ${Math.round(msg.recentWindowMs/60000)} min`;
-        break;
-      case 'history.begin':
-        historySnapshot = msg.snapshotId; selectRun(msg.runId);
-        data.length = 0; seenSamples.clear(); break;
-      case 'history':
-        if (historySnapshot === msg.snapshotId) applyHistory(msg); break;
-      case 'history.end': break;
-      case 'sample': pushSample(msg.runId, msg.seq, msg.ms, msg.temp, msg.fault||0); break;
-      case 'state': selectRun(msg.runId || 0); break;
-    }
-    updateBig();
-  }
-
-  // ------- Demo mode -------
-  function startDemo(){
-    if (channel === 'demo') return; setChannel('demo');
-    if (demoTimer) clearInterval(demoTimer);
-    data.length = 0; seenSamples.clear(); currentRunId = 0;
-    let demoSeq = 0;
-    let start = Date.now() - MAX_POINTS*500;
-    let temp = 22 + Math.random();
-    // seed history
-    for (let i=MAX_POINTS-60;i<MAX_POINTS;i++){
-      temp += (Math.random()-0.5)*0.15; pushSample(0, ++demoSeq, start + i*500, temp, 0);
-    }
-    demoTimer = setInterval(()=>{
-      // Simple ramp based on selected preset
-      const ramps = { idle: 0, slow: 100/3600, med: 200/3600, fast: 400/3600 }; // °C per sec
-      const dt = 0.5; // seconds per sample
-      const drift = (Math.random()-0.5)*0.2; // noise
-      temp += ramps[selectedPreset]*dt + drift;
-      pushSample(0, ++demoSeq, Date.now(), temp, 0);
-      updateBig();
-    }, 500);
-  }
-
-  // ------- UI actions -------
-  unitBtn.addEventListener('click', ()=>{
-    unit = (unit==='C'?'F':'C'); localStorage.setItem('unit', unit); unitBtn.textContent = '°'+unit; updateBig();
-  });
-  unitBtn.textContent = '°'+unit;
-
-  document.querySelectorAll('button[data-preset]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      const preset = btn.dataset.preset; selectedPreset = preset; setPresetUI(preset);
-      sendCommand({ type:'preset', value:preset });
-      showToast(`Preset: ${btn.textContent.replace(/\s*·.*/, '')}`);
-    });
-  });
-  setPresetUI(selectedPreset);
-
-  csvBtn.addEventListener('click', ()=>{
-    if (data.length===0){ showToast('No data yet'); return; }
-    const rows = ['ms,tempC'];
-    for (const s of data) rows.push(`${s.t},${Number.isFinite(s.c)?s.c.toFixed(3):''}`);
-    const blob = new Blob([rows.join('\n')], {type:'text/csv'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href=url; a.download='kiln.csv'; a.click();
-    URL.revokeObjectURL(url);
-  });
-
-  function sendCommand(obj){
-    const payload = JSON.stringify(obj);
-    if (ws && ws.readyState===1){ ws.send(payload); return; }
-    fetch('/api/cmd', { method:'POST', headers:{'Content-Type':'application/json'}, body:payload }).catch(()=>{});
-  }
-
-  // ------- Big number + status -------
-  function updateBig(){
-    const last = data[data.length-1];
-    const tempC = last && Number.isFinite(last.c) ? last.c : NaN;
-    const display = (unit==='C') ? tempC : (Number.isFinite(tempC)?c2f(tempC):NaN);
-    bigTemp.textContent = fmt(display) + '°' + unit;
-    const age = (nowMs() - lastTickTs) / 1000;
-    if (!isFinite(age) || age>2) subText.textContent = 'Waiting for data…';
-    else subText.textContent = `Live · ${rateHz} Hz`;
-  }
-
-  // ------- Boot -------
-  draw();
-  const url = new URL(location.href);
-  if (url.searchParams.has('demo')) startDemo();
-  tryConnect();
-})();
-</script>
+  <script src="./js/protocol.js"></script>
+  <script src="./js/state.js"></script>
+  <script src="./js/transport.js"></script>
+  <script src="./js/metrics.js"></script>
+  <script src="./js/graph.js"></script>
+  <script src="./js/app.js"></script>
 </body>
 </html>

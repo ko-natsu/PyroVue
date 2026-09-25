@@ -97,9 +97,9 @@ public:
 SampleRouter sampleRouter;
 SensorService sensorService(thermocouple, runManager, sampleRouter, SAMPLE_HZ);
 
-static void handleCommand(const String& command) {
+static bool handleCommand(const String& command) {
     JsonDocument doc;
-    if (deserializeJson(doc, command) != DeserializationError::Ok || !doc["type"].is<const char*>()) return;
+    if (deserializeJson(doc, command) != DeserializationError::Ok || !doc["type"].is<const char*>()) return false;
     const char* type = doc["type"];
     if (strcmp(type, "preset") == 0 && doc["value"].is<const char*>()) {
         presetManager.setPreset(doc["value"].as<const char*>());
@@ -109,13 +109,16 @@ static void handleCommand(const String& command) {
             persistedBucketMs = 0xffffffffUL;
             historyPersistence.startRun(runManager.runId(), COARSE_BUCKET_MS);
         }
+        return true;
     } else if (strcmp(type, "run.stop") == 0) {
         if (runManager.stopRun() == RunManager::STOP_OK) {
             historyStore.flush();
             persistLatestCoarse();
             historyPersistence.flush();
         }
+        return true;
     }
+    return false;
 }
 #endif
 
