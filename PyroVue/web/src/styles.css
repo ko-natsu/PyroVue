@@ -1,6 +1,14 @@
 /* PyroVue responsive shell — Milestone 2
    Soft technical separation: hairlines, translucency, spacing. No card grid. */
 
+@font-face {
+  font-family: Oxanium;
+  src: url("./assets/fonts/Oxanium[wght].ttf") format("truetype");
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+}
+
 :root {
   --bg: #f5eee1;
   --bg-deep: #ece1cc;
@@ -30,7 +38,8 @@
   --pv-graph-rateMid: #d1b94d;
   --pv-graph-rateHot: #d96540;
 
-  --font-display: "DIN Alternate", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --pv-graph-font: "Oxanium", system-ui, sans-serif;
+  --font-display: "Oxanium", "DIN Alternate", ui-monospace, monospace;
   --font-ui: "Avenir Next", "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
 }
 
@@ -61,6 +70,45 @@
   --pv-graph-rateCool: #558e86;
   --pv-graph-rateMid: #b59c3e;
   --pv-graph-rateHot: #c75239;
+}
+/* Heat stages are decorative; fault and warning colors stay independent. */
+.app {
+  --heat-primary: var(--accent);
+  --heat-secondary: var(--accent);
+  --heat-pixel: var(--accent);
+  --heat-contrast: var(--heat-primary);
+  --heat-field-opacity: 0;
+  --heat-dither-opacity: 0;
+}
+.app[data-heat="dull-red"] { --heat-primary: #8f3034; --heat-secondary: #c95a3d; --heat-pixel: #d8785f; }
+.app[data-heat="red"] { --heat-primary: #b92f32; --heat-secondary: #e34d35; --heat-pixel: #f0714d; }
+.app[data-heat="orange"] { --heat-primary: #d9572b; --heat-secondary: #ee8736; --heat-pixel: #f4a55a; }
+.app[data-heat="yellow"] { --heat-primary: #b47720; --heat-secondary: #e2a83a; --heat-pixel: #f3cc68; }
+.app[data-heat="white"] { --heat-primary: #9a7028; --heat-secondary: #d6b65a; --heat-pixel: #f4e4a5; }
+:root[data-theme="dark"] .app[data-heat="dull-red"] { --heat-primary: #a72d43; --heat-secondary: #e14a50; --heat-pixel: #ff7380; }
+:root[data-theme="dark"] .app[data-heat="red"] { --heat-primary: #c52c3e; --heat-secondary: #f04d42; --heat-pixel: #ff7460; }
+:root[data-theme="dark"] .app[data-heat="orange"] { --heat-primary: #ca4a25; --heat-secondary: #f37932; --heat-pixel: #ffa15a; }
+:root[data-theme="dark"] .app[data-heat="yellow"] { --heat-primary: #b97a24; --heat-secondary: #eeb33f; --heat-pixel: #ffd76f; }
+:root[data-theme="dark"] .app[data-heat="white"] { --heat-primary: #9d8144; --heat-secondary: #ddc16d; --heat-pixel: #fff0b4; }
+:root[data-theme="dark"] .app { --heat-contrast: var(--heat-secondary); }
+.app:not([data-heat="neutral"]) {
+  --pv-graph-raw: var(--heat-contrast);
+  --pv-graph-coarse: var(--heat-secondary);
+  --pv-graph-band: color-mix(in srgb, var(--heat-secondary) 19%, transparent);
+}
+:root[data-theme="dark"] .app:not([data-heat="neutral"]) {
+  --pv-graph-coarse: var(--heat-primary);
+}
+.app[data-heat="neutral"] { --heat-field-opacity: 0; --heat-dither-opacity: 0; }
+.app:not([data-heat="neutral"]) .run-state[data-state="active"] {
+  color: var(--heat-contrast);
+  border-color: var(--heat-contrast);
+}
+.app:not([data-heat="neutral"]) .cone-shape,
+.app:not([data-heat="neutral"]) .cone-nearby #coneCurrent {
+  color: var(--heat-contrast);
+  fill: var(--heat-contrast);
+  stroke: var(--heat-contrast);
 }
 
 /* No-JS fallback: follow the OS preference until app.js sets data-theme. */
@@ -110,6 +158,39 @@ body {
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
+  position: relative;
+  background: linear-gradient(180deg, var(--bg), var(--bg-deep));
+}
+
+.heat-dither {
+  position: absolute;
+  pointer-events: none;
+  z-index: 2;
+  background-image: repeating-conic-gradient(var(--heat-pixel) 0 25%, transparent 0 50%);
+  opacity: var(--heat-dither-opacity);
+  transition: opacity 750ms ease-out, background-position 750ms ease-out, background-color 750ms ease-out;
+}
+.heat-dither-top {
+  top: 0;
+  left: 11%;
+  right: 0;
+  height: 150px;
+  background-size: 10px 10px;
+  mask-image: linear-gradient(to bottom, #000 0%, transparent 100%), linear-gradient(to right, transparent, #000 28%, transparent 92%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 100%), linear-gradient(to right, transparent, #000 28%, transparent 92%);
+  mask-composite: intersect;
+  -webkit-mask-composite: source-in;
+}
+.heat-dither-edge {
+  top: 78px;
+  left: 0;
+  bottom: 0;
+  width: min(20vw, 150px);
+  background-size: 14px 14px;
+  mask-image: linear-gradient(to right, #000, transparent 80%), linear-gradient(to bottom, transparent 2%, #000 25%, transparent 94%);
+  -webkit-mask-image: linear-gradient(to right, #000, transparent 80%), linear-gradient(to bottom, transparent 2%, #000 25%, transparent 94%);
+  mask-composite: intersect;
+  -webkit-mask-composite: source-in;
 }
 
 /* ---------- Masthead ---------- */
@@ -126,18 +207,13 @@ body {
 }
 
 .masthead::after {
-  /* ACTIVE ambience: soft heat tint dispersed through the top strip. */
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent 8%, var(--state-glow) 45%, transparent 92%);
-  opacity: 0;
-  transition: opacity 0.8s ease;
+  background: linear-gradient(90deg, transparent 8%, var(--heat-primary) 54%, transparent 95%);
+  opacity: var(--heat-field-opacity);
+  transition: opacity 750ms ease-out, background-color 750ms ease-out, background-position 750ms ease-out;
   pointer-events: none;
-}
-
-.app[data-run="active"] .masthead::after {
-  opacity: 1;
 }
 
 .brand {
@@ -203,7 +279,8 @@ body {
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
-  grid-template-areas: "readout graph";
+  grid-template-areas: "readout graph" "cone graph";
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 0;
 }
 
@@ -225,14 +302,10 @@ body {
   inset: -20% -40% auto auto;
   width: 120%;
   height: 60%;
-  background: radial-gradient(closest-side, var(--state-glow), transparent 78%);
-  opacity: 0;
-  transition: opacity 1s ease;
+  background: radial-gradient(closest-side, var(--heat-secondary), transparent 78%);
+  opacity: var(--heat-field-opacity);
+  transition: opacity 750ms ease-out, background-color 750ms ease-out, background-position 750ms ease-out;
   pointer-events: none;
-}
-
-.app[data-run="active"] .readout::before {
-  opacity: 1;
 }
 
 /* ---------- Dominant temperature ---------- */
@@ -303,40 +376,90 @@ body {
   font-weight: 600;
 }
 
-/* ---------- Cone placeholder (model seam lands in Milestone 6) ---------- */
-
-.cone {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding-top: 14px;
+/* ---------- Secondary cone instrument ---------- */
+.cone-panel {
+  grid-area: cone;
+  padding: 18px 26px 24px;
   border-top: 1px solid var(--hairline);
-  color: var(--fg-dim);
-  min-height: 64px;
+  border-right: 1px solid var(--hairline);
+  min-width: 0;
 }
 
-.cone[data-model="placeholder"] {
-  color: var(--fg-faint);
+.cone-heading {
+  color: var(--fg-dim);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.cone-instrument {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .cone-glyph {
-  width: 56px;
-  height: 44px;
+  width: clamp(110px, 14vw, 166px);
+  height: auto;
   flex: none;
+  overflow: visible;
 }
 
+.cone-trail {
+  fill: none;
+  stroke: var(--fg-faint);
+  stroke-width: 1;
+  opacity: 0.55;
+}
+
+.cone-shape {
+  fill: var(--accent);
+  fill-opacity: 0.75;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  transition: fill 750ms ease-out, stroke 750ms ease-out;
+}
+
+.cone-baseline {
+  fill: none;
+  stroke: var(--hairline-strong);
+  stroke-width: 1;
+}
+
+.cone-reading { min-width: 0; }
 .cone-label {
+  display: block;
   font-family: var(--font-display);
-  font-size: 17px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-size: clamp(19px, 2.2vw, 27px);
+  line-height: 1.1;
   color: var(--fg);
 }
 
-.cone[data-model="placeholder"] .cone-label {
-  color: var(--fg-faint);
+.cone-nearby {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  color: var(--fg-dim);
 }
+
+.cone-nearby #coneCurrent {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.cone-basis,
+.cone-disclaimer {
+  margin: 5px 0 0;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.cone-disclaimer { margin-top: 8px; }
+.cone-panel[data-model="unavailable"] .cone-shape { fill: var(--fg-faint); stroke: var(--fg-faint); opacity: 0.45; }
+.cone-panel[data-model="unavailable"] .cone-nearby { visibility: hidden; }
 
 /* ---------- Graph panel ---------- */
 
@@ -383,6 +506,76 @@ body {
   font-size: 13px;
   letter-spacing: 0.05em;
   color: var(--fg-dim);
+}
+
+/* Run-scoped markers remain inspectable without precision canvas gestures. */
+.markers-panel {
+  border: 1px solid var(--hairline);
+  background: var(--surface-strong);
+  padding: 12px;
+  max-height: min(36vh, 300px);
+  overflow-y: auto;
+}
+
+.markers-panel[hidden],
+.marker-editor[hidden] {
+  display: none;
+}
+
+.markers-heading,
+.marker-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.markers-list {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px 0;
+}
+
+.marker-entry {
+  flex: 0 0 auto;
+  max-width: 220px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.marker-entry[aria-current="true"] {
+  border-color: var(--pv-graph-marker);
+}
+
+.marker-editor {
+  display: grid;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}
+
+.marker-editor label {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+.marker-editor textarea {
+  width: 100%;
+  min-height: 68px;
+  padding: 10px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--graph-well);
+  color: var(--fg);
+  font: inherit;
+  resize: vertical;
+}
+
+.marker-editor textarea:focus-visible {
+  outline: 2px solid var(--accent);
 }
 
 /* ---------- Session row ---------- */
@@ -524,11 +717,10 @@ body {
 
 .app[data-expanded="true"] .stage {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-areas:
-    "readout"
-    "graph";
+  grid-template-areas: "readout" "graph";
   grid-template-rows: auto minmax(0, 1fr);
 }
+.app[data-expanded="true"] .cone-panel { display: none; }
 
 .app[data-expanded="true"] .readout {
   flex-direction: row;
@@ -549,10 +741,7 @@ body {
   font-size: clamp(40px, 6vw, 72px);
 }
 
-.app[data-expanded="true"] .rate,
-.app[data-expanded="true"] .cone {
-  display: none;
-}
+.app[data-expanded="true"] .rate { display: none; }
 
 .app[data-expanded="true"] .status-lines {
   margin-top: 0;
@@ -594,9 +783,8 @@ body {
 
   .stage {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      "readout"
-      "graph";
+    grid-template-areas: "readout" "graph" "cone";
+    grid-template-rows: auto minmax(340px, 1fr) auto;
   }
 
   .readout {
@@ -617,8 +805,9 @@ body {
     gap: 4px 16px;
   }
 
-  .cone {
-    min-height: 52px;
+  .cone-panel {
+    border-right: none;
+    padding: 14px 16px 22px;
   }
 
   .graph-panel {
@@ -655,14 +844,20 @@ body {
   }
 }
 
-@media (max-width: 400px) {
+@media (max-width: 355px) {
   .masthead {
-    gap: 8px;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 8px 12px;
   }
-
-  .run-id {
-    font-size: 11px;
+  .brand { width: 100%; }
+  .mast-status {
+    width: 100%;
+    justify-content: space-between;
+    gap: 4px;
   }
+  .clock { white-space: nowrap; }
+  .run-id { font-size: 11px; }
 
   .controls {
     grid-template-columns: 1fr;
@@ -671,6 +866,7 @@ body {
   .controls .btn {
     width: 100%;
   }
+  .cone-nearby { display: none; }
 }
 
 /* Expanded mode collapses to the same single-column rhythm on narrow screens. */
@@ -689,6 +885,12 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .masthead::after,
   .readout::before,
+  .cone-shape,
+  .heat-dither {
+    transition: none;
+    transform: none;
+  }
+  .btn:active { transform: none; }
   .toast,
   .btn {
     transition: none;

@@ -7,8 +7,9 @@
   if (!api || typeof api.AppStore !== 'function' || typeof api.DeviceTransport !== 'function') {
     throw new Error('PyroVue frontend modules loaded out of order');
   }
-  if (typeof api.GraphRenderer !== 'function') {
-    throw new Error('PyroVue.GraphRenderer is required by the shell');
+  if (typeof api.GraphRenderer !== 'function' || typeof api.MarkerStore !== 'function' ||
+      typeof api.estimateConeProgress !== 'function' || typeof api.deriveHeatTheme !== 'function') {
+    throw new Error('PyroVue graph, marker, cone and theme modules are required by the shell');
   }
 
   const document = root.document;
@@ -27,10 +28,23 @@
     faultLine: document.getElementById('faultLine'),
     coneWidget: document.getElementById('coneWidget'),
     coneLabel: document.getElementById('coneLabel'),
+    coneShape: document.getElementById('coneShape'),
+    conePrevious: document.getElementById('conePrevious'),
+    coneCurrent: document.getElementById('coneCurrent'),
+    coneNext: document.getElementById('coneNext'),
+    coneBasis: document.getElementById('coneBasis'),
     canvas: document.getElementById('chart'),
     expandButton: document.getElementById('expandBtn'),
     sessionButton: document.getElementById('sessionBtn'),
     markerButton: document.getElementById('markerBtn'),
+    markersToggle: document.getElementById('markersToggle'),
+    markersPanel: document.getElementById('markersPanel'),
+    markersClose: document.getElementById('markersClose'),
+    markersList: document.getElementById('markersList'),
+    markerEditor: document.getElementById('markerEditor'),
+    markerTime: document.getElementById('markerTime'),
+    markerNote: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('markerNote')),
+    markerDelete: document.getElementById('markerDelete'),
     unitButton: document.getElementById('unitBtn'),
     themeButton: document.getElementById('themeBtn'),
     elapsed: document.getElementById('elapsed'),
@@ -39,7 +53,34 @@
     toast: document.getElementById('toast'),
   };
 
-  let unit = root.localStorage.getItem('unit') === 'F' ? 'F' : 'C';
+  /** @type {Storage | null} */
+  let storage = null;
+  try {
+    storage = root.localStorage;
+  } catch {
+    // Storage getter itself can throw in restricted browser contexts.
+  }
+  /** @param {string} key */
+  function readPreference(key) {
+    try { return storage?.getItem(key) ?? null; } catch { return null; }
+  }
+  /** @param {string} key @param {string} value */
+  function savePreference(key, value) {
+    try { storage?.setItem(key, value); } catch { /* Preference lasts for this page. */ }
+  }
+  let unit = readPreference('unit') === 'F' ? 'F' : 'C';
+  /** @type {InstanceType<typeof api.MarkerStore> | null} */
+  let markerStore = null;
+  try {
+    markerStore = new api.MarkerStore(storage);
+  } catch {
+    // Restricted storage must not prevent monitoring or pretend to save notes.
+  }
+  let markerRunId = store.run.id;
+  /** @type {string | null} */
+  let selectedMarkerId = null;
+  /** @type {Array<{id:string,runId:number,ms:number,note:string}>} */
+  let visibleMarkers = [];
   let pendingCommand = /** @type {'start' | 'stop' | null} */ (null);
   /** @type {ReturnType<typeof root.setTimeout> | null} */
   let commandSyncTimer = null;
@@ -47,8 +88,6 @@
   let commandDeadlineTimer = null;
   let destroyed = false;
   let expanded = false;
-  /** @type {null | {currentCone:number, progress?:number}} */
-  let coneModel = null;
   /** @type {any} */
   let inspectedPoint = null;
   let renderPending = false;
@@ -216,25 +255,32 @@
     elements.faultLine.hidden = false;
   }
 
-  function renderConeWidget() {
-    if (!elements.coneWidget || !elements.coneLabel) return;
-    const model = coneModel;
-    const ready = !!model && typeof model === 'object' && Number.isFinite(/** @type {any} */ (model).currentCone);
-    elements.coneWidget.dataset.model = ready ? 'ready' : 'placeholder';
-    elements.coneLabel.textContent = ready ? `Cone ${Math.round(/** @type {any} */ (model).currentCone)}` : 'Cone —';
-    const progress = ready ? /** @type {any} */ (model).progress : null;
-    if (ready && Number.isFinite(progress)) {
-      elements.coneWidget.style.setProperty('--cone-progress', String(Math.min(1, Math.max(0, progress))));
-    } else {
-      elements.coneWidget.style.removeProperty('--cone-progress');
-    }
+  /** @param {number} progress */
+  function coneBodyPath(progress) {
+    const p = Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0));
+    const tipX = 36 + 42 * p;
+    const tipY = 8 + 44 * p;
+    return `M16 64 Q${26 + 18 * p} ${48 - 12 * p} ${tipX} ${tipY} Q${42 + 22 * p} 44 56 64 Z`;
   }
 
-  /** Milestone 6 seam: the widget renders normalized model data only.
-   * @param {{currentCone:number, progress?:number} | null} model */
-  function setConeModel(model) {
-    coneModel = model;
-    renderConeWidget();
+  /** @param {ReturnType<typeof api.estimateConeProgress>} model */
+  function renderConeWidget(model) {
+    if (!elements.coneWidget || !elements.coneLabel) return;
+    const ready = model !== null;
+    elements.coneWidget.dataset.model = ready ? 'ready' : 'unavailable';
+    elements.coneLabel.textContent = ready ? model.label : 'Estimated cone —';
+    elements.coneWidget.setAttribute('aria-label', ready
+      ? `${model.label}, ${Math.round(model.progress * 100)}% progression`
+      : 'Estimated cone unavailable');
+    if (elements.coneShape) elements.coneShape.setAttribute('d', coneBodyPath(ready ? model.progress : 0));
+    if (elements.conePrevious) elements.conePrevious.textContent = ready ? model.previousCone ?? '' : '';
+    if (elements.coneCurrent) elements.coneCurrent.textContent = ready ? model.cone : '';
+    if (elements.coneNext) elements.coneNext.textContent = ready ? model.nextCone ?? '' : '';
+    if (elements.coneBasis) {
+      elements.coneBasis.textContent = ready
+        ? `${model.quality === 'measured-100c' ? 'Final 100°C rise' : 'Recent-rise estimate'} ${Math.round(model.rateCPerHour)}°C/hr · ${model.rateColumnCPerHour}°C/hr chart`
+        : 'Awaiting sufficient valid firing history';
+    }
   }
 
   function applyExpanded() {
@@ -273,8 +319,92 @@
     elements.inspectLine.hidden = false;
   }
 
+  /** @param {boolean} open */
+  function showMarkerPanel(open) {
+    if (!elements.markersPanel || !elements.markersToggle) return;
+    if (!open && elements.markersPanel.contains(document.activeElement)) {
+      (elements.markersToggle.hidden ? elements.expandButton : elements.markersToggle)?.focus();
+    }
+    elements.markersPanel.hidden = !open;
+    elements.markersToggle.setAttribute('aria-expanded', String(open));
+    if (!open) {
+      selectedMarkerId = null;
+      if (elements.markerEditor) elements.markerEditor.hidden = true;
+    }
+  }
+
+  function renderMarkerList() {
+    const list = elements.markersList;
+    if (!list) return;
+    list.replaceChildren();
+    for (const marker of visibleMarkers) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn marker-entry';
+      button.textContent = `${fmtElapsed(marker.ms)} · ${marker.note || 'No note'}`;
+      button.title = marker.note || 'No note';
+      button.setAttribute('aria-current', String(marker.id === selectedMarkerId));
+      button.addEventListener('click', () => inspectMarker(marker.id));
+      list.append(button);
+    }
+    if (elements.markersToggle) {
+      elements.markersToggle.hidden = visibleMarkers.length === 0;
+      elements.markersToggle.textContent = `Markers (${visibleMarkers.length})`;
+    }
+    if (visibleMarkers.length === 0) showMarkerPanel(false);
+  }
+
+  function syncMarkers() {
+    if (markerRunId !== store.run.id) {
+      markerRunId = store.run.id;
+      selectedMarkerId = null;
+      showMarkerPanel(false);
+      visibleMarkers = markerStore && markerRunId > 0 ? markerStore.list(markerRunId) : [];
+      renderMarkerList();
+    }
+  }
+
+  /** @param {string} id */
+  function inspectMarker(id) {
+    const marker = visibleMarkers.find((entry) => entry.id === id);
+    if (!marker) return;
+    selectedMarkerId = id;
+    showMarkerPanel(true);
+    renderMarkerList();
+    if (elements.markerEditor) elements.markerEditor.hidden = false;
+    if (elements.markerTime) elements.markerTime.textContent = `Marker ${fmtElapsed(marker.ms)}`;
+    if (elements.markerNote) {
+      elements.markerNote.value = marker.note;
+      elements.markerNote.focus();
+    }
+  }
+
+  function captureMarker() {
+    if (!markerStore) {
+      showToast('Marker storage unavailable in this browser');
+      return;
+    }
+    const reading = store.currentReading;
+    if (!store.run.active || !reading || reading.source !== 'live'
+      || reading.sample.runId !== store.run.id || store.getFreshness().telemetry !== 'fresh') {
+      showToast('Wait for a live session reading before adding a marker');
+      return;
+    }
+    const ms = reading.sample.ms + Math.max(0, store.now() - reading.receivedAt);
+    try {
+      markerStore.add(store.run.id, ms);
+      visibleMarkers = markerStore.list(store.run.id);
+      renderMarkerList();
+      scheduleRender();
+      showToast(`Marker captured at ${fmtElapsed(ms)}`);
+    } catch {
+      showToast('Marker not saved — browser storage unavailable');
+    }
+  }
+
   const renderer = new api.GraphRenderer(elements.canvas, {
     onInspect: renderInspect,
+    onMarkerInspect: (/** @type {{id?:string}} */ marker) => { if (marker.id) inspectMarker(marker.id); },
     onExpandedChange: (/** @type {any} */ next) => setExpanded(Boolean(next)),
     listenForResize: false,
   });
@@ -282,11 +412,33 @@
   function render() {
     const reconciled = reconcilePendingCommand();
     const freshness = store.getFreshness();
+    syncMarkers();
     const run = store.run;
     const reading = store.currentReading;
     const latest = reading ? reading.sample : null;
 
-
+    const liveForRun = run.active && reading?.source === 'live' && latest?.runId === run.id
+      && freshness.telemetry === 'fresh' && freshness.sensor === 'valid'
+      && freshness.connection !== 'disconnected' && freshness.connection !== 'connecting'
+      && freshness.connection !== 'awaiting-state';
+    const heat = api.deriveHeatTheme({
+      active: run.active,
+      fresh: liveForRun,
+      valid: freshness.sensor === 'valid',
+      tempC: latest?.tempC,
+    });
+    if (elements.app) {
+      elements.app.dataset.heat = heat.stage;
+      if (heat.stage === 'neutral') {
+        elements.app.style.removeProperty('--heat-intensity');
+        elements.app.style.removeProperty('--heat-field-opacity');
+        elements.app.style.removeProperty('--heat-dither-opacity');
+      } else {
+        elements.app.style.setProperty('--heat-intensity', heat.intensity.toFixed(3));
+        elements.app.style.setProperty('--heat-field-opacity', (0.24 * heat.intensity).toFixed(3));
+        elements.app.style.setProperty('--heat-dither-opacity', (0.34 * heat.intensity).toFixed(3));
+      }
+    }
     if (elements.app) elements.app.dataset.run = run.active ? 'active' : 'idle';
     if (elements.runId) {
       elements.runId.textContent = run.id > 0 ? `Run #${String(run.id).padStart(4, '0')}` : 'Run #—';
@@ -331,10 +483,16 @@
     }
 
     renderSessionControl();
+    if (elements.markerButton) {
+      const ready = !!markerStore && run.active && reading?.source === 'live'
+        && reading.sample.runId === run.id && freshness.telemetry === 'fresh';
+      elements.markerButton.disabled = !ready;
+      elements.markerButton.title = ready ? 'Capture a marker at the current run time' : 'Wait for a live session reading';
+    }
     if (elements.unitButton) elements.unitButton.textContent = `°${unit}`;
 
-    renderConeWidget();
     const points = store.telemetry.getChartData();
+    renderConeWidget(api.estimateConeProgress(points));
     renderRate(points);
     renderer.render({
       points,
@@ -345,7 +503,7 @@
           regionMinDurationMs: 30000,
         })
         : [],
-      markers: [],
+      markers: visibleMarkers.map((marker) => ({ id: marker.id, ms: marker.ms, label: marker.note })),
       unit,
       expanded,
     });
@@ -381,26 +539,56 @@
     }
   }
 
-  let theme = root.localStorage.getItem('theme');
-  if (theme !== 'light' && theme !== 'dark') {
-    theme = root.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
+  const savedTheme = readPreference('theme');
+  /** @type {'light'|'dark'} */
+  let theme = savedTheme === 'light' || savedTheme === 'dark'
+    ? savedTheme
+    : root.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   applyTheme(theme);
 
   elements.sessionButton?.addEventListener('click', () => void handleSessionButton());
-  elements.markerButton?.addEventListener('click', () => {
-    showToast('Event markers arrive in a later update');
+  elements.markerButton?.addEventListener('click', captureMarker);
+  elements.markersToggle?.addEventListener('click', () => showMarkerPanel(!!elements.markersPanel?.hidden));
+  elements.markersClose?.addEventListener('click', () => showMarkerPanel(false));
+  elements.markerEditor?.addEventListener('submit', (/** @type {Event} */ event) => {
+    event.preventDefault();
+    if (!selectedMarkerId || !markerStore) return;
+    try {
+      markerStore.update(store.run.id, selectedMarkerId, elements.markerNote?.value || '');
+      visibleMarkers = markerStore.list(store.run.id);
+      renderMarkerList();
+      scheduleRender();
+      showToast('Marker note saved');
+    } catch {
+      showToast('Marker note not saved — browser storage unavailable');
+    }
+  });
+  elements.markerDelete?.addEventListener('click', () => {
+    if (!selectedMarkerId || !markerStore) return;
+    try {
+      markerStore.remove(store.run.id, selectedMarkerId);
+      selectedMarkerId = null;
+      visibleMarkers = markerStore.list(store.run.id);
+      renderMarkerList();
+      (elements.markersToggle?.hidden ? elements.expandButton : elements.markersToggle)?.focus();
+      if (elements.markerEditor) elements.markerEditor.hidden = true;
+      scheduleRender();
+      showToast('Marker deleted');
+    } catch {
+      showToast('Marker not deleted — browser storage unavailable');
+    }
   });
   elements.unitButton?.addEventListener('click', () => {
     unit = unit === 'C' ? 'F' : 'C';
-    root.localStorage.setItem('unit', unit);
+    savePreference('unit', unit);
     if (inspectedPoint) renderInspect(inspectedPoint);
     scheduleRender();
   });
   elements.themeButton?.addEventListener('click', () => {
     theme = theme === 'dark' ? 'light' : 'dark';
-    root.localStorage.setItem('theme', theme);
+    savePreference('theme', theme);
     applyTheme(theme);
+    scheduleRender();
   });
   elements.expandButton?.addEventListener('click', () => setExpanded(!expanded));
   document.addEventListener('keydown', (/** @type {KeyboardEvent} */ event) => {
@@ -418,11 +606,13 @@
   }, { once: true });
 
   store.subscribe(scheduleRender);
+  document.fonts?.ready.then(scheduleRender);
   root.setInterval(scheduleRender, 1000);
 
   applyExpanded();
-  renderConeWidget();
-  root.pyroVueApp = Object.freeze({ store, transport, renderer, setConeModel, setExpanded });
+  renderConeWidget(null);
+  renderMarkerList();
+  root.pyroVueApp = Object.freeze({ store, transport, renderer, setExpanded });
   scheduleRender();
   transport.start();
 })(/** @type {any} */ (globalThis));

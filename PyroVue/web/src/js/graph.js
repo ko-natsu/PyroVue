@@ -413,7 +413,7 @@
    * @typedef {Object} GraphRenderPayload
    * @property {ReadonlyArray<any>} [points] canonical chart data from the store
    * @property {ReadonlyArray<{startMs:number, endMs:number, rateCPerHour:number, quality?:string, sampleCount?:number}>} [rateRegions]
-   * @property {ReadonlyArray<{ms:number, label?:string}>} [markers]
+   * @property {ReadonlyArray<{id?:string, ms:number, label?:string}>} [markers]
    * @property {'C'|'F'} [unit]
    * @property {boolean} [expanded]
    */
@@ -421,6 +421,7 @@
   /**
    * @typedef {Object} GraphRendererOptions
    * @property {(payload: InspectPayload | null) => void} [onInspect]
+   * @property {(marker:{id?:string, ms:number, label?:string}) => void} [onMarkerInspect]
    * @property {(expanded: boolean) => void} [onExpandedChange]
    * @property {'C'|'F'} [unit]
    * @property {number} [hitRadiusPx]
@@ -453,6 +454,8 @@
       this.selection = null;
       /** @type {Array<{ms:number, kind:'raw'|'coarse', x:number, y:number, tempC:number, value:number, minimumC:number, maximumC:number}>} */
       this.models = [];
+      /** @type {Array<{marker:{id?:string, ms:number, label?:string}, x:number}>} */
+      this.markerTargets = [];
       /** @type {PlotRect | null} */
       this.plot = null;
 
@@ -462,6 +465,10 @@
         event.preventDefault();
         this.pointerDown = true;
         const position = this.eventPosition(event);
+        if (position && this.inspectMarkerAt(position.x, position.y)) {
+          this.pointerDown = false;
+          return;
+        }
         if (position) this.inspectAt(position.x, position.y, true);
       };
       /** @type {(event: PointerEvent) => void} */
@@ -540,6 +547,7 @@
       this.listeningForResize = false;
       this.models = [];
       this.selection = null;
+      this.markerTargets = [];
     }
 
     /**
@@ -565,6 +573,28 @@
       }
       if (this.lastPayload) this.render(this.lastPayload);
       return model;
+    }
+
+    /**
+     * A marker tap opens the corresponding note even if the curve has no
+     * valid point at that time. The marker list disambiguates close markers.
+     * @param {number} x
+     * @param {number} y
+     */
+    inspectMarkerAt(x, y) {
+      if (!this.plot || y < this.plot.plotTop || y > this.plot.plotBottom) return false;
+      let closest = null;
+      let distance = 25;
+      for (const target of this.markerTargets) {
+        const delta = Math.abs(x - target.x);
+        if (delta < distance) {
+          distance = delta;
+          closest = target.marker;
+        }
+      }
+      if (!closest) return false;
+      if (typeof this.options.onMarkerInspect === 'function') this.options.onMarkerInspect(closest);
+      return true;
     }
 
     /** Clears any active inspection selection. */
@@ -613,7 +643,7 @@
 
     /** @returns {Record<string, string>} theme colors with defaults */
     resolveColors() {
-      const base = { ...DEFAULT_COLORS, ...(this.options.colors || {}) };
+      const base = { ...DEFAULT_COLORS, ...(this.options.colors || {}), font: 'system-ui, sans-serif' };
       try {
         if (typeof root.getComputedStyle === 'function') {
           const style = root.getComputedStyle(this.canvas);
@@ -622,6 +652,8 @@
               const value = style.getPropertyValue(`--pv-graph-${key}`).trim();
               if (value) base[key] = value;
             }
+            const font = style.getPropertyValue('--pv-graph-font').trim();
+            if (font) base.font = font;
           }
         }
       } catch {
@@ -670,12 +702,13 @@
       const rateRegions = payload.rateRegions || [];
       const markers = payload.markers || [];
       const expanded = this.expanded;
-      const axisFont = `${expanded ? 12 : 11}px system-ui, sans-serif`;
-      const chipFont = `${expanded ? 13 : 12}px system-ui, sans-serif`;
+      const axisFont = `${expanded ? 12 : 11}px ${colors.font}`;
+      const chipFont = `${expanded ? 13 : 12}px ${colors.font}`;
 
       const series = buildSeries(points, { unit: this.unit });
       const timeTargetTicks = Math.max(3, Math.min(10, Math.floor(size.width / 90)));
-      const timeDomain = computeTimeDomain(series.maxMs, { maxTicks: timeTargetTicks });
+      const latestMarkerMs = markers.reduce((max, marker) => Number.isFinite(marker.ms) ? Math.max(max, marker.ms) : max, 0);
+      const timeDomain = computeTimeDomain(Math.max(series.maxMs, latestMarkerMs), { maxTicks: timeTargetTicks });
       const tempTargetTicks = Math.max(3, Math.min(9, Math.floor(size.height / 55)));
       const tempDomain = computeTemperatureDomain(series.temperatureValues, { targetTicks: tempTargetTicks });
 
@@ -717,6 +750,10 @@
         for (const model of segment) this.models.push(this.toPixelModel(model, xForMs, yForValue));
       }
       this.models.sort((a, b) => a.ms - b.ms);
+      this.markerTargets = markers
+        .filter((marker) => Number.isFinite(marker.ms))
+        .map((marker) => ({ marker, x: xForMs(marker.ms) }))
+        .filter((target) => target.x >= plotLeft && target.x <= plotRight);
 
       context.clearRect(0, 0, size.width, size.height);
 
@@ -726,6 +763,9 @@
         context.textAlign = 'center';
         context.textBaseline = 'middle';
         context.fillText('Waiting for telemetry…', (plotLeft + plotRight) / 2, (plotTop + plotBottom) / 2);
+        for (const { marker } of this.markerTargets) {
+          this.drawMarker(context, colors, marker, xForMs, plotTop, plotBottom, chipFont, size.width);
+        }
         return;
       }
 
@@ -810,8 +850,7 @@
         this.drawRateBand(context, colors, rateRegions, xForMs, rateBandTop, rateBandHeight, plotLeft, plotRight);
       }
 
-      // Event markers (Milestone 5 supplies data; today this is the hook).
-      for (const marker of markers) {
+      for (const { marker } of this.markerTargets) {
         this.drawMarker(context, colors, marker, xForMs, plotTop, plotBottom, chipFont, size.width);
       }
 
@@ -926,7 +965,7 @@
         const rate = convertRate(region.rateCPerHour, this.unit);
         if (Number.isFinite(rate) && x1 - x0 >= 44) {
           const label = `${Math.round(rate)}°${this.unit}/hr`;
-          context.font = '10px system-ui, sans-serif';
+          context.font = `10px ${colors.font}`;
           const textWidth = context.measureText(label).width;
           if (Number.isFinite(textWidth) && textWidth < x1 - x0 - 8) {
             context.fillStyle = colors.axis;

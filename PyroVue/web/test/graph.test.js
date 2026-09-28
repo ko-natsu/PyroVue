@@ -448,6 +448,27 @@ test('GraphRenderer fulfils the shared contract: render, resize, destroy', () =>
   assert.equal(canvas.width, widthBefore);
 });
 
+test('marker touch opens a run marker ahead of the latest sample without selecting a point', () => {
+  const { canvas, listeners } = stubCanvas();
+  const opened = [];
+  const inspected = [];
+  const renderer = new GraphRenderer(canvas, {
+    onMarkerInspect: (marker) => opened.push(marker.id),
+    onInspect: (point) => inspected.push(point),
+  });
+  renderer.render({
+    points: [rawPoint({ ms: 0, tempC: 25 }), rawPoint({ ms: 1000, seq: 2, tempC: 27 })],
+    markers: [{ id: 'first', ms: 3000, label: 'Damper' }],
+  });
+  const target = renderer.markerTargets[0];
+  assert.ok(target);
+  assert.ok(target.x <= renderer.plot.plotRight);
+  listeners.get('pointerdown')({ offsetX: target.x, offsetY: renderer.plot.plotTop + 30, preventDefault() {} });
+  assert.deepEqual(opened, ['first']);
+  assert.deepEqual(inspected, []);
+  renderer.destroy();
+});
+
 test('renderer consumes raw store output directly (no protocol knowledge)', () => {
   const { canvas } = stubCanvas();
   const renderer = new GraphRenderer(canvas);

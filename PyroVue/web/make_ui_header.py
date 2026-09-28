@@ -1,7 +1,10 @@
 import argparse
+import base64
 import gzip
+import html as html_module
 import re
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE_DIR = ROOT / "web" / "src"
@@ -11,32 +14,90 @@ OUTPUT_FILE = ROOT / "include" / "ui_index.h"
 
 SCRIPT_PATTERN = re.compile(r'<script\s+src="([^"]+)"\s*></script>')
 STYLE_PATTERN = re.compile(r'<link\s+rel="stylesheet"\s+href="([^"]+)"\s*/?>')
+CSS_URL_PATTERN = re.compile(r"url\(\s*(?:(['\"])(.*?)\1|([^)]*?))\s*\)", re.IGNORECASE)
+LOCAL_FONT_PATTERN = re.compile(r"\.ttf$", re.IGNORECASE)
+LICENSE_ID_PATTERN = re.compile(r'\bid\s*=\s*["\']oxanium-license["\']')
 
 
-def read_local_asset(reference: str) -> str:
-    asset = (SOURCE_DIR / reference).resolve()
+def resolve_local_asset(reference: str, base: Path) -> Path:
+    asset = (base / unquote(reference)).resolve()
     try:
         asset.relative_to(SOURCE_DIR.resolve())
     except ValueError as error:
         raise ValueError(f"Asset escapes web/src: {reference}") from error
     if not asset.is_file():
         raise FileNotFoundError(f"Missing frontend asset: {reference}")
-    return asset.read_text(encoding="utf-8").rstrip()
+    return asset
+
+
+def is_local_url(reference: str) -> bool:
+    parsed = urlsplit(reference)
+    return not parsed.scheme and not parsed.netloc and not reference.startswith("#")
+
+
+def read_local_asset(reference: str) -> str:
+    return resolve_local_asset(reference, SOURCE_DIR).read_text(encoding="utf-8").rstrip()
 
 
 def bundle_source() -> bytes:
     html = INPUT_FILE.read_text(encoding="utf-8")
+    bundled_font = False
 
     def inline_script(match: re.Match[str]) -> str:
         reference = match.group(1)
         return f"<script>\n{read_local_asset(reference)}\n</script>"
 
     def inline_style(match: re.Match[str]) -> str:
+        nonlocal bundled_font
         reference = match.group(1)
-        return f"<style>\n{read_local_asset(reference)}\n</style>"
+        stylesheet = resolve_local_asset(reference, SOURCE_DIR)
+        css = stylesheet.read_text(encoding="utf-8").rstrip()
+
+        def inline_font(match: re.Match[str]) -> str:
+            nonlocal bundled_font
+            quoted_reference = match.group(2)
+            if quoted_reference is None or not is_local_url(quoted_reference):
+                return match.group(0)
+            parsed = urlsplit(quoted_reference)
+            if not LOCAL_FONT_PATTERN.search(parsed.path):
+                resolve_local_asset(parsed.path, stylesheet.parent)
+                return match.group(0)
+            font = resolve_local_asset(parsed.path, stylesheet.parent)
+            bundled_font = True
+            encoded = base64.b64encode(font.read_bytes()).decode("ascii")
+            return f"url('data:font/ttf;base64,{encoded}')"
+
+        css = CSS_URL_PATTERN.sub(inline_font, css)
+
+        def reject_local_url(match: re.Match[str]) -> str:
+            raw_reference = match.group(2) if match.group(1) else match.group(3)
+            if raw_reference is None:
+                return match.group(0)
+            reference = raw_reference.strip()
+            if is_local_url(reference):
+                parsed = urlsplit(reference)
+                resolve_local_asset(parsed.path, stylesheet.parent)
+                raise ValueError(f"Unbundled local stylesheet URL: {reference}")
+            return match.group(0)
+
+        CSS_URL_PATTERN.sub(reject_local_url, css)
+        return f"<style>\n{css}\n</style>"
 
     html = SCRIPT_PATTERN.sub(inline_script, html)
     html = STYLE_PATTERN.sub(inline_style, html)
+    if bundled_font:
+        if LICENSE_ID_PATTERN.search(html):
+            raise ValueError("Duplicate Oxanium license insertion")
+        license_text = read_local_asset("assets/fonts/OFL.txt")
+        license_payload = html_module.escape(license_text, quote=False)
+        license_script = (
+            '<script type="text/plain" id="oxanium-license">'
+            f"{license_payload}</script>"
+        )
+        if "</body>" in html:
+            html = html.replace("</body>", f"{license_script}\n</body>", 1)
+        else:
+            html += license_script
     return html.encode("utf-8")
 
 
