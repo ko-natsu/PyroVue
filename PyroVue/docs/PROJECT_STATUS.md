@@ -17,12 +17,24 @@ Frontend milestones **1–8 are implemented and accepted by the owner on ESP32-S
 
 Editable UI: `web/src/`; tests: `web/test/`; bundler: `web/make_ui_header.py`; generated preview: ignored `web/dist/index.html`; generated firmware header: `include/ui_index.h` (**never edit it manually**). Firmware and device services live under `src/`, `lib/`, and `include/` inside the `PyroVue/` project. The unrelated repository-root `lib/SensorService/` is not part of its PlatformIO build.
 
+## N16R8 migration execution
+
+Approved cross-session specification: [`n16r8-migration-plan.md`](n16r8-migration-plan.md).
+
+- **M0 complete:** shared archive/domain contracts, portable PVR1/PVE1 codecs with shared CRC, strict browser validators, and native/Node behavior fixtures. [M0 handoff](milestones/n16r8-m0.md) records interfaces, commands and cross-language runtime evidence.
+- **M1 SOURCE handoff complete; physical gate blocked:** headless `esp32s3_devkitc_n16r8` builds with the 16 MB / 8 MB profile, PSRAM-safe MAX31855 pins and dedicated no-auto-format LittleFS partition. Firmware and empty FS image build/inspection passed. Only motherboard COM1 was visible; the owner confirmed hardware is unavailable this session. No upload/uploadfs occurred, and actual flash/PSRAM, thermocouple and reboot persistence are **not verified**. [M1 handoff](milestones/n16r8-m1.md) contains the exact physical resume procedure.
+- **Current execution checks:** 12/12 native cases under Ubuntu-24.04 WSL; 104/104 Node cases; typecheck/lint/build/bundle-current checks passed. A compiled C++ -> independent Python CRC/float/UTF-8 decoder -> JS validator smoke preserved exact readings, fault/gap flags and Unicode notes; scaffolds were removed.
+- **All retained firmware targets build:** N16R8 static RAM 51,596 / 327,680 B and flash 901,693 / 3,145,728 B; Feather RAM 91,856 / 327,680 B and flash 940,037 / 1,441,792 B; ESP8266 RAM 54,828 / 81,920 B and flash 428,209 / 1,044,464 B. These are compile/link reports, not physical memory/free-heap measurements.
+
+The Feather remains the default. Wire protocol stays v2 until M3. N16R8 currently runs RAM-only monitor sessions at 1 Hz, not durable archive logging, shared notes, or run export; those are M2–M6. Portable declarations for later milestones have no fake logger/API implementation. This update does not replace the owner's earlier physical acceptance or resolve the known reconnect storm.
+
+
 ## Validation and evidence
 
 - **Physical, owner-reported:** ESP32-S3 deployment tested with iPad and iPhone clients. The owner judged implementation and validation of the frontend milestones satisfactory. Multiple clients were tested: functionality worked, **but a reconnect storm was observed**. No second device validation is being claimed for ESP8266.
 - **Browser, previously exercised:** the production bundle was run against controlled protocol-v2 WebSocket/HTTP scenarios: idle/start/stop, history catch-up and overlap, faults, stale/disconnected, markers, graph interactions, C/F and long history. The 1024×768, 1180×820, 390×844 and 320×568 light/dark × idle/active matrix and distinct safety/interaction captures are in [`visual-validation/`](visual-validation/). These images do **not** prove physical hardware behavior.
-- **Last recorded automated checks:** `npm test` (59 passing), `npm run typecheck`, `npm run lint`, `npm run build`, and `npm run check:bundle` passed. The ESP32-S3 and ESP8266 PlatformIO builds passed. These are prior recorded results, not checks rerun for this documentation update.
-- **Last recorded build measurements:** HTML 211,286 B; gzip 67,336 B. ESP32-S3 RAM 91,856 / 327,680 B, flash 939,869 / 1,441,792 B. ESP8266 RAM 54,828 / 81,920 B, flash 428,209 / 1,044,464 B. Build reports are not runtime free-heap data. ESP8266 physical deployment and three-cycle serial heap/history replay measurements were **not reported**; treat them as optional future hardening, not as completed evidence.
+- **Prior recorded automated checks (before N16R8 migration):** `npm test` (59 passing), `npm run typecheck`, `npm run lint`, `npm run build`, and `npm run check:bundle` passed. The ESP32-S3 and ESP8266 PlatformIO builds passed. These are historical results; current migration execution checks are recorded above.
+- **Prior recorded build measurements:** HTML 211,286 B; gzip 67,336 B. ESP32-S3 RAM 91,856 / 327,680 B, flash 939,869 / 1,441,792 B. ESP8266 RAM 54,828 / 81,920 B, flash 428,209 / 1,044,464 B. Build reports are not runtime free-heap data. ESP8266 physical deployment and three-cycle serial heap/history replay measurements were **not reported**; treat them as optional future hardening, not as completed evidence.
 
 ## Known limitations and future iteration
 
@@ -30,7 +42,7 @@ Editable UI: `web/src/`; tests: `web/test/`; bundler: `web/make_ui_header.py`; g
 2. ESP8266 advertises a 10-minute `recentWindowMs` despite allocating five minutes of raw history. Its firmware built, but no physical ESP8266 validation was reported.
 3. Snapshot replay uses a global replay-suppression flag and a three-pass catch-up cap. A multi-client design change must revisit that boundary rather than assuming independent client snapshots already exist.
 4. Marker notes live only in the local browser origin/run-ID namespace. Site-data clearing erases them, and clients do not share them. Device-side persistence would need an explicit protocol/API and migration design.
-5. Persistence health is not exposed over protocol v2; long-duration serial heap/soak measurements were not supplied. `pio test -e native` was previously unavailable on the Windows host without `gcc`/`g++`.
+5. Persistence health is not exposed over protocol v2; long-duration serial heap/soak measurements were not supplied. Native testing was previously unavailable on the Windows PATH without `gcc`/`g++`; M0 now has executed WSL native evidence, not physical storage evidence.
 
 ## Design and change guardrails
 

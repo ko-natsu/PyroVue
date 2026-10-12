@@ -2,21 +2,10 @@
 
 #include <string.h>
 
+#include "Crc32.h"  // persistence::crc32: shared IEEE CRC-32
+
 namespace coarsecodec {
 namespace {
-
-// IEEE CRC-32 (reflected, poly 0xEDB88320), bit-at-a-time: small table-free
-// form, adequate for the low persistence cadence of coarse buckets.
-uint32_t crc32(const uint8_t* data, size_t len) {
-  uint32_t crc = 0xFFFFFFFFu;
-  for (size_t i = 0; i < len; ++i) {
-    crc ^= data[i];
-    for (int bit = 0; bit < 8; ++bit) {
-      crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-    }
-  }
-  return crc ^ 0xFFFFFFFFu;
-}
 
 void putU32(uint8_t* out, uint32_t v) {
   out[0] = static_cast<uint8_t>(v & 0xFFu);
@@ -59,7 +48,7 @@ size_t encodeHeader(uint8_t* out, size_t cap, const Header& header) {
   // bytes 5..7 reserved, already zero
   putU32(out + 8, header.bucketMs);
   putU32(out + 12, header.runId);
-  putU32(out + 16, crc32(out, 16));
+  putU32(out + 16, persistence::crc32(out, 16));
   return kHeaderSize;
 }
 
@@ -73,7 +62,7 @@ bool decodeHeader(const uint8_t* in, size_t len, Header& header) {
   if (in[4] != kVersion) {
     return false;
   }
-  if (getU32(in + 16) != crc32(in, 16)) {
+  if (getU32(in + 16) != persistence::crc32(in, 16)) {
     return false;
   }
   header.bucketMs = getU32(in + 8);
@@ -92,7 +81,7 @@ size_t encodeRecord(uint8_t* out, size_t cap, const CoarseSample& sample) {
   putF32(out + 12, sample.maximumC);
   out[16] = sample.fault;
   // bytes 17..19 reserved, already zero
-  putU32(out + 20, crc32(out, 20));
+  putU32(out + 20, persistence::crc32(out, 20));
   return kRecordSize;
 }
 
@@ -100,7 +89,7 @@ bool decodeRecord(const uint8_t* in, size_t len, CoarseSample& sample) {
   if (len < kRecordSize) {
     return false;
   }
-  if (getU32(in + 20) != crc32(in, 20)) {
+  if (getU32(in + 20) != persistence::crc32(in, 20)) {
     return false;
   }
   sample.runId = 0;  // runId lives in the header; not repeated per record
@@ -118,7 +107,7 @@ ScanResult scanRecords(const uint8_t* in, size_t len) {
   result.validCount = 0;
   size_t offset = 0;
   while (offset + kRecordSize <= len) {
-    if (getU32(in + offset + 20) != crc32(in + offset, 20)) {
+    if (getU32(in + offset + 20) != persistence::crc32(in + offset, 20)) {
       break;  // torn/garbage record: keep the valid prefix, stop here
     }
     offset += kRecordSize;

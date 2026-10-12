@@ -1,4 +1,5 @@
 #include "HistoryStore.h"
+#include <math.h>
 #if defined(ARDUINO)
 #include <Arduino.h>
 #endif

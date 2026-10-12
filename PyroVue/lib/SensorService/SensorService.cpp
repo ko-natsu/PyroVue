@@ -46,7 +46,10 @@ Max31855Sensor::Max31855Sensor()
 
 bool Max31855Sensor::begin() {
 #if defined(ARDUINO_ARCH_ESP32)
-    thermoSpi.begin(THERMOCOUPLE_SCK, THERMOCOUPLE_MISO, THERMOCOUPLE_MOSI);
+    // Explicit pins preserve the N16R8 receive-only bus (MOSI=-1), avoiding
+    // the board defaults and the GPIO35..37 octal-PSRAM signals.
+    thermoSpi.begin(THERMOCOUPLE_SCK, THERMOCOUPLE_MISO, THERMOCOUPLE_MOSI,
+                    THERMOCOUPLE_CS);
 #endif
     return thermocouple.begin();
 }

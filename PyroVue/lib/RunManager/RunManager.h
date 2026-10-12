@@ -58,7 +58,9 @@ class RunManager : public IRunClock {
 public:
     enum StartResult {
         START_STARTED = 0,
-        START_ALREADY_ACTIVE = 1
+        START_ALREADY_ACTIVE = 1,
+        START_STORE_FAILED = 2,
+        START_ID_EXHAUSTED = 3
     };
 
     enum StopResult {
@@ -79,6 +81,15 @@ public:
     // Start a run: increments the run id, persists it once, stamps startMs
     // from nowMs and resets the sequence. See repeated-start rules above.
     StartResult startRun(uint32_t nowMs);
+
+    // Frozen M2 declarations only; not callable until the durable lifecycle
+    // implementation lands. M2 folds begin's catalog argument into the existing
+    // begin(nowMs, minimumRunId=0) entry point and removes the one-argument
+    // definition above; current monitor lifecycle remains implemented unchanged.
+    void begin(uint32_t nowMs, uint32_t minimumRunId);
+    StartResult prepareRun(uint32_t nowMs, uint32_t minimumNextRunId = 0);
+    bool activatePreparedRun();
+    void abandonPreparedRun();
 
     // Stop the active run. Elapsed time freezes at the last elapsedMs()
     // reading; run id is retained for the next start.
