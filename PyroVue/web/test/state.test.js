@@ -11,11 +11,35 @@ const { AppStore } = globalThis.PyroVue;
 function hello(overrides = {}) {
   return {
     type: 'hello',
-    protocol: 2,
+    protocol: 3,
     firmware: 'rework-2',
     sampleHz: 2,
     runId: 17,
     runActive: true,
+    deviceId: 'a1b2c3d4e5f6',
+    bootId: '0123456789abcdef',
+    capabilities: { runArchive: true },
+    acquireIntervalMs: 500,
+    logIntervalMs: 2000,
+    maxRunMs: 86400000,
+    logging: {
+      state: 'recording',
+      durableLogSeq: 2,
+      latestAcqSeq: 2,
+      bufferedRecords: 0,
+      acquisitionGaps: 0,
+      droppedAcquired: 0,
+      queueHighWater: 2,
+      errorCode: null,
+    },
+    storage: {
+      mounted: true,
+      totalBytes: 8192000,
+      usedBytes: 4096,
+      freeBytes: 8187904,
+      reservedRemainingBytes: 32768,
+      startRequiredBytes: 2416640,
+    },
     runStartMs: 100,
     recentWindowMs: 600000,
     coarseResolutionMs: 30000,
@@ -27,7 +51,7 @@ function hello(overrides = {}) {
 function marker(type, overrides = {}) {
   return {
     type,
-    protocol: 2,
+    protocol: 3,
     snapshotId: 41,
     runId: 17,
     throughSeq: 2,
@@ -41,11 +65,17 @@ test('assembles replay transaction, buffers catch-up samples, and applies raw pr
   const store = new AppStore({ now: () => monotonicNow, wallNow: () => wallNow });
   store.setConnection('websocket', 'awaiting-state');
   store.handle(hello());
+  assert.equal(store.device.protocol, 3);
+  assert.equal(store.device.deviceId, 'a1b2c3d4e5f6');
+  assert.equal(store.device.bootId, '0123456789abcdef');
+  assert.deepEqual(store.device.capabilities, { runArchive: true });
+  assert.equal(store.device.logging.state, 'recording');
+  assert.equal(store.device.storage.mounted, true);
   store.handle(marker('history.begin'));
 
   store.handle({
     type: 'history',
-    protocol: 2,
+    protocol: 3,
     snapshotId: 41,
     runId: 17,
     kind: 'coarse',
@@ -59,7 +89,7 @@ test('assembles replay transaction, buffers catch-up samples, and applies raw pr
   });
   store.handle({
     type: 'history',
-    protocol: 2,
+    protocol: 3,
     snapshotId: 999,
     runId: 17,
     kind: 'raw',
@@ -70,7 +100,7 @@ test('assembles replay transaction, buffers catch-up samples, and applies raw pr
   });
   store.handle({
     type: 'history',
-    protocol: 2,
+    protocol: 3,
     snapshotId: 41,
     runId: 17,
     kind: 'raw',
@@ -82,7 +112,7 @@ test('assembles replay transaction, buffers catch-up samples, and applies raw pr
 
   monotonicNow = 1100;
   wallNow += 100;
-  store.handle({ type: 'sample', protocol: 2, runId: 17, seq: 2, ms: 31500, temp: 207, fault: 0 });
+  store.handle({ type: 'sample', protocol: 3, runId: 17, seq: 2, ms: 31500, temp: 207, fault: 0 });
   assert.equal(store.telemetry.getChartData().length, 0, 'transaction is not published before history.end');
   assert.equal(store.currentReading.sample.seq, 2, 'catch-up sample updates current state immediately');
 
@@ -105,7 +135,7 @@ test('assembles replay transaction, buffers catch-up samples, and applies raw pr
 test('deduplicates raw samples and never merges different run IDs', () => {
   const store = new AppStore({ now: () => 0, wallNow: () => 100000 });
   store.handle(hello());
-  const sample = { type: 'sample', protocol: 2, runId: 17, seq: 1, ms: 500, temp: 25, fault: 0 };
+  const sample = { type: 'sample', protocol: 3, runId: 17, seq: 1, ms: 500, temp: 25, fault: 0 };
   store.handle({ ...sample, runId: 16 });
   assert.equal(store.currentReading, null, 'mismatched nonzero sample cannot establish a run');
   assert.equal(store.run.id, 17);
@@ -124,7 +154,7 @@ test('publishes replayed raw history as the latest reading when no catch-up arri
   store.handle(hello());
   store.handle(marker('history.begin'));
   store.handle({
-    type: 'history', protocol: 2, snapshotId: 41, runId: 17, kind: 'raw', resolutionMs: 500,
+    type: 'history', protocol: 3, snapshotId: 41, runId: 17, kind: 'raw', resolutionMs: 500,
     chunk: 0, final: false, samples: [{ seq: 1, ms: 10000, temp: 400, fault: 0 }],
   });
   store.handle(marker('history.end', { throughSeq: 1 }));
@@ -139,7 +169,7 @@ test('reports connection, freshness, and sensor validity independently', () => {
   const store = new AppStore({ now: () => now, wallNow: () => 100000 + now });
   store.setConnection('websocket', 'live-active');
   store.handle(hello());
-  store.handle({ type: 'sample', protocol: 2, runId: 17, seq: 1, ms: 500, temp: null, fault: 9 });
+  store.handle({ type: 'sample', protocol: 3, runId: 17, seq: 1, ms: 500, temp: null, fault: 9 });
 
   assert.deepEqual(store.getFreshness(), {
     connection: 'live-active',
@@ -158,7 +188,7 @@ test('reports connection, freshness, and sensor validity independently', () => {
 
   now = 4001;
   assert.equal(store.getFreshness().telemetry, 'stale');
-  store.handle({ type: 'state', protocol: 2, runId: 17, runActive: false });
+  store.handle({ type: 'state', protocol: 3, runId: 17, runActive: false });
   assert.equal(store.getFreshness().telemetry, 'stale', 'aged live reading stays stale after stop');
   store.setConnection('none', 'disconnected');
   assert.equal(store.getFreshness().connection, 'disconnected');
@@ -168,15 +198,15 @@ test('idle live readings refresh independently without polluting retained run te
   let now = 10;
   const store = new AppStore({ now: () => now, wallNow: () => 100000 + now });
   store.handle(hello());
-  store.handle({ type: 'sample', protocol: 2, runId: 17, seq: 1, ms: 500, temp: 25, fault: 0 });
+  store.handle({ type: 'sample', protocol: 3, runId: 17, seq: 1, ms: 500, temp: 25, fault: 0 });
   const chartBeforeStop = store.telemetry.getChartData();
   const startedAt = store.run.startedAt;
   const elapsedMs = store.run.elapsedMs;
-  store.handle({ type: 'state', protocol: 2, runId: 17, runActive: false });
+  store.handle({ type: 'state', protocol: 3, runId: 17, runActive: false });
   now = 20;
-  store.handle({ type: 'sample', protocol: 2, runId: 0, seq: 0, ms: 0, temp: 26, fault: 0 });
+  store.handle({ type: 'sample', protocol: 3, runId: 0, seq: 0, ms: 0, temp: 26, fault: 0 });
   now = 30;
-  store.handle({ type: 'sample', protocol: 2, runId: 0, seq: 0, ms: 0, temp: null, fault: 1 });
+  store.handle({ type: 'sample', protocol: 3, runId: 0, seq: 0, ms: 0, temp: null, fault: 1 });
 
   assert.equal(store.currentReading.sample.tempC, Number.NaN);
   assert.equal(store.currentReading.sample.fault, 1);
@@ -191,11 +221,11 @@ test('idle live readings refresh independently without polluting retained run te
   assert.deepEqual(store.telemetry.getChartData(), chartBeforeStop);
   assert.equal(store.telemetry.raw.size, 1);
 
-  store.handle({ type: 'state', protocol: 2, runId: 18, runActive: true });
+  store.handle({ type: 'state', protocol: 3, runId: 18, runActive: true });
   assert.equal(store.run.id, 18);
   assert.equal(store.currentReading, null);
   assert.equal(store.telemetry.getChartData().length, 0);
-  store.handle({ type: 'sample', protocol: 2, runId: 18, seq: 1, ms: 100, temp: 30, fault: 0 });
+  store.handle({ type: 'sample', protocol: 3, runId: 18, seq: 1, ms: 100, temp: 30, fault: 0 });
   assert.equal(store.currentReading.source, 'live');
   assert.equal(store.currentReading.sample.runId, 18);
   assert.equal(store.run.elapsedMs, 100);

@@ -1,20 +1,20 @@
 # PyroVue
 
-Kiln telemetry firmware and an offline browser monitor. The device owns thermocouple sampling, run identity, bounded history, WebSocket delivery and the Feather's single-run temperature CSV; the browser owns graphing, derived metrics, markers and presentation. For **current completion, owner-reported device validation, the multi-client reconnect-storm caveat and future work**, read [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md). [`docs/protocol-v2.md`](docs/protocol-v2.md) is the wire contract.
+Kiln telemetry firmware and an offline browser monitor. The device owns thermocouple sampling, run identity, bounded history, N16R8 multi-run recording and the Feather's interim single-run CSV. The browser owns graphing, derived metrics and presentation. Read [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) for current delivery and [`docs/protocol-v3.md`](docs/protocol-v3.md) for the wire/API contract.
 
 ## Targets
 
 - `adafruit_feather_esp32s3_tft`: ESP32-S3 with the existing ST7789 display.
 - `esp8266_d1mini`: D1 mini-class ESP8266, TFT-free, with MAX31855 pins `D2` (CS), `D7` (MOSI), `D6` (MISO), and `D5` (SCK).
-- `esp32s3_devkitc_n16r8`: headless ESP32-S3 DevKitC-1, 16 MB flash / 8 MB octal PSRAM. Source/build bring-up support is available; physical verification is pending. The Feather remains the default.
+- `esp32s3_devkitc_n16r8`: headless ESP32-S3 DevKitC-1, 16 MB flash / 8 MB octal PSRAM. Durable multi-run recording and the M3 archive/annotation API are implemented and physically exercised. The Feather remains the default until the final migration milestone.
 - `native`: portable core/codec tests; requires host `gcc`/`g++`. This Windows host runs the native gate in Ubuntu-24.04 through WSL.
 
-The ESP32 and ESP8266 targets use maintained ESP32Async networking libraries. WebSocket `/ws` supplies live telemetry; HTTP remains available at `/`, `/api/now`, `/api/info`, and `POST /api/cmd`. The Feather additionally exposes the single-run CSV routes described below; other targets return 404 for them.
+The targets use pinned ESP32Async networking libraries. WebSocket `/ws` supplies telemetry/history; all commands use `POST /api/cmd` with discovered device/boot identity. N16R8 adds `/api/runs` metadata, snapshot, sample/event pages, annotations and deletion. Monitor targets advertise `capabilities.runArchive:false`; Feather additionally retains its CSV routes below.
 
 ## History configuration
 The retained Feather/ESP8266 monitors acquire at 2 Hz. Feather retains 10 minutes of raw samples; ESP8266 uses 5 minutes to protect its smaller heap. Coarse RAM history aggregates finalized 30-second buckets with average, minimum, maximum, and ORed fault flags. Feather separately saves selected unfiltered readings every three seconds to its existing FAT partition. ESP8266 retains its coarse LittleFS adapter; neither target persists every acquired 2 Hz reading.
 
-The N16R8 profile acquires at 1 Hz, keeps 300 raw readings and 60 five-second graph buckets in RAM, and mounts its dedicated LittleFS partition without auto-formatting. Current firmware supports **monitor sessions only**, not durable run recording, device notes, or export. It does not use the old replacing single-file coarse writer. M0 supplies executable archive codecs and validators; M2 Phase A adds portable record selection and journal reduction, not device storage/lifecycle integration. M2–M6 implement the recorder/API/browser/export cutover described in the [migration specification](docs/n16r8-migration-plan.md). See [M0](docs/milestones/n16r8-m0.md), [M1](docs/milestones/n16r8-m1.md) and [M2](docs/milestones/n16r8-m2.md) handoffs for evidence and remaining gates.
+The N16R8 profile acquires at 1 Hz, keeps 300 raw readings and 60 five-second graph buckets in RAM, and records selected unfiltered readings every two seconds to separate LittleFS run directories. Start prepares the durable identity/files before activation; Stop syncs records and finalizes the journal. Reboot never resumes a run or replaces earlier runs. Physical API readback preserved all 31 records of the owner's first run across firmware reboots, including originating protocol-2 metadata. M3 exposes archive/notes HTTP APIs; the Runs browser, shared-note UI and ZIP export are M4–M6. See the [migration specification](docs/n16r8-migration-plan.md) and [M3 handoff](docs/milestones/n16r8-m3.md).
 
 ## Feather single-run CSV bridge
 
@@ -66,19 +66,21 @@ pio run -e esp32s3_devkitc_n16r8 -t buildfs
 pio device list
 ```
 
-Only after identifying the correct native-USB port and confirming the new log partition is empty, obtain explicit approval before the **destructive** first `uploadfs`. The `data/` image contains only `.gitkeep`, not run files. Use `pio run -e esp32s3_devkitc_n16r8 -t uploadfs --upload-port <verified-port>` exactly once for initial provisioning, then `-t upload --upload-port <verified-port>` for firmware. Subsequent updates must **never** upload the filesystem image over saved runs. Normal boot never formats storage. Physical flash/PSRAM, thermocouple, and reboot write/read persistence checks are still required before M1 is complete.
+First `uploadfs` is provisioning only: identify the correct board/USB port and confirm its existing contents are disposable before overwriting the log partition. The `data/` image contains only `.gitkeep`, not run files. Use `pio run -e esp32s3_devkitc_n16r8 -t uploadfs --upload-port <verified-port>` for that initial provision; later updates use `-t upload` only. Normal boot never formats storage. Physical memory sizes, mounted storage and real run-file reboot readback have been verified; the M1 handoff lists the remaining PSRAM-pattern and thermocouple checks.
+
+After initial provisioning, upload **firmware only**. Hardware/logging diagnostics are available at `http://192.168.4.1/api/info` under `hardware`, `storage` and `logging`. Serial reconnect or `i` at 115200 baud reprints them; startup never waits for a monitor. API clients must discover `deviceId` and bind `X-PyroVue-Device-Id` for commands/archive requests.
 
 ## Protocol
 
-Protocol v2 is documented in [`docs/protocol-v2.md`](docs/protocol-v2.md). A connection receives `hello`, an ordered snapshot transaction, then live `sample` messages. Active samples carry `runId`, `seq`, run-relative `ms`, `temp`, and `fault`; reserved idle samples use `(runId, seq, ms) = (0, 0, 0)` and update the current readout without entering run history.
+Protocol **3** is documented in [`docs/protocol-v3.md`](docs/protocol-v3.md), with no older-wire parser aliases. A connection receives `hello` and a bounded history transaction while live samples remain unsuppressed. Active samples carry `runId`, `seq`, run-relative `ms`, `temp`, `fault`; idle `(runId,seq,ms)=(0,0,0)` readings update only the current readout.
 
-Commands are `run.start`, `run.stop`, and `preset`. Recognized Start/Stop commands broadcast authoritative `state` after their effects complete, and the browser performs one bounded HTTP reconciliation if that push is missed. Run IDs are persisted once per start. A reboot does not silently resume an active run.
+Commands are HTTP-only `run.start`, `run.stop` and `preset`, with stable request IDs and captured device/boot/current-run context. Success is a validated `command.result`, not plain OK. Run state broadcasts remain authoritative; ambiguous commands are reconciled rather than automatically retried. Archive schema 1 remains independent of originating wire version, so existing protocol-2 bench recordings are readable without rewriting them.
 
 ## Frontend development
 
 Editable frontend assets live under `web/src/`. The browser code is dependency-free at runtime and is bundled into one offline HTML document before being gzip-embedded in `include/ui_index.h`.
 
-The frontend provides run-scoped browser-local markers, rate-of-rise regions, a witness-cone-qualified Orton cone estimate, and active-run heat colors. The screen is a monitor/logger, not a heater controller; device clients do not share marker notes.
+The frontend provides run-scoped browser-local markers, rate-of-rise regions, a witness-cone-qualified Orton cone estimate and active-run heat colors. It is not a heater controller. Device annotation CRUD now exists in the M3 API, but the current editor remains local-only until the M5 UI/outbox integration.
 
 Install development tools and run the frontend checks:
 

@@ -146,6 +146,27 @@ bool HistoryStore::rawAt(size_t oldestIndex, TempSample& out) const {
     return true;
 }
 
+size_t HistoryStore::copyRawAfter(uint32_t afterSeq, uint32_t throughSeq,
+                                  TempSample* out, size_t capacity) const {
+    if (!out || !capacity) return 0;
+    HistoryGuard guard;
+    if (!rawCap || !rawSize) return 0;
+    const size_t first = (rawHead + rawCap - rawSize) % rawCap;
+    size_t low = 0, high = rawSize;
+    while (low < high) {
+        const size_t middle = low + (high - low) / 2;
+        if (raw[(first + middle) % rawCap].seq <= afterSeq) low = middle + 1;
+        else high = middle;
+    }
+    size_t count = 0;
+    for (size_t i = low; i < rawSize && count < capacity; ++i) {
+        const TempSample& sample = raw[(first + i) % rawCap];
+        if (sample.seq > throughSeq) break;
+        out[count++] = sample;
+    }
+    return count;
+}
+
 size_t HistoryStore::coarseCount() const {
     HistoryGuard guard;
     return coarseSize;
@@ -157,6 +178,27 @@ bool HistoryStore::coarseAt(size_t oldestIndex, CoarseSample& out) const {
     const size_t first = (coarseHead + coarseCap - coarseSize) % coarseCap;
     out = coarse[(first + oldestIndex) % coarseCap];
     return true;
+}
+
+size_t HistoryStore::copyCoarseFrom(uint32_t fromMs, uint32_t throughMs,
+                                    CoarseSample* out, size_t capacity) const {
+    if (!out || !capacity) return 0;
+    HistoryGuard guard;
+    if (!coarseCap || !coarseSize) return 0;
+    const size_t first = (coarseHead + coarseCap - coarseSize) % coarseCap;
+    size_t low = 0, high = coarseSize;
+    while (low < high) {
+        const size_t middle = low + (high - low) / 2;
+        if (coarse[(first + middle) % coarseCap].ms < fromMs) low = middle + 1;
+        else high = middle;
+    }
+    size_t count = 0;
+    for (size_t i = low; i < coarseSize && count < capacity; ++i) {
+        const CoarseSample& sample = coarse[(first + i) % coarseCap];
+        if (sample.ms > throughMs) break;
+        out[count++] = sample;
+    }
+    return count;
 }
 
 bool HistoryStore::currentBucket(CoarseSample& out) const {

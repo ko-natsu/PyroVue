@@ -14,10 +14,20 @@ bool SensorService::begin() {
 }
 
 bool SensorService::tick(uint32_t nowMs) {
+#if defined(PYROVUE_BOARD_N16R8)
+    if (static_cast<uint32_t>(nowMs - lastSampleMs) < interval) return false;
+    lastSampleMs = nowMs;
+    RawReading reading{};
+    if (!started || !sensor.read(reading)) {
+        reading.temperatureC = NAN;
+        reading.fault = SENSOR_FAULT_NAN;
+    }
+#else
     if (!started || static_cast<uint32_t>(nowMs - lastSampleMs) < interval) return false;
     lastSampleMs = nowMs;
     RawReading reading{};
     if (!sensor.read(reading)) return false;
+#endif
     uint8_t fault = reading.fault;
     if (!isfinite(reading.temperatureC)) fault |= SENSOR_FAULT_NAN;
     TempSample sample{

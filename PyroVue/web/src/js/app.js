@@ -209,13 +209,9 @@
         csvStatus = null;
         csvStatusError = null;
       } else {
-        const firstDiscovery = csvSupported !== true;
         csvSupported = true;
         csvStatus = status;
         csvStatusError = null;
-        // Feather supports the durable HTTP command queue; legacy targets
-        // keep websocket-first commands forever.
-        if (firstDiscovery) transport.preferHttpCommands = true;
       }
     } catch (error) {
       csvStatusError = errorMessage(error);
@@ -835,7 +831,7 @@
     renderSessionControl();
     scheduleCommandRecovery();
     try {
-      await transport.send(api.createCommand(starting ? 'run.start' : 'run.stop'));
+      await transport.send({ type: starting ? 'run.start' : 'run.stop' });
     } catch (error) {
       clearCommandTimers();
       pendingCommand = null;

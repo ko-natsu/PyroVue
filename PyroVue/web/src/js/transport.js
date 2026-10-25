@@ -7,10 +7,30 @@
     throw new Error('state.js must load before transport.js');
   }
 
+  const MAX_COMMAND_BYTES = 256;
+  const DEVICE_ID_PATTERN = /^[0-9a-f]{12}$/;
+  const BOOT_ID_PATTERN = /^[0-9a-f]{16}$/;
+
+  /** @param {string} text */
+  function utf8ByteLength(text) {
+    if (typeof root.TextEncoder === 'function') {
+      return new root.TextEncoder().encode(text).length;
+    }
+    let bytes = 0;
+    for (const character of text) {
+      const codePoint = character.codePointAt(0) || 0;
+      if (codePoint <= 0x7f) bytes += 1;
+      else if (codePoint <= 0x7ff) bytes += 2;
+      else if (codePoint <= 0xffff) bytes += 3;
+      else bytes += 4;
+    }
+    return bytes;
+  }
+
   class DeviceTransport {
     /**
      * @param {InstanceType<typeof api.AppStore>} store
-     * @param {{WebSocket?:any, fetch?:typeof fetch, location?:{protocol:string,host:string}, setTimeout?:typeof setTimeout, clearTimeout?:typeof clearTimeout, setInterval?:typeof setInterval, clearInterval?:typeof clearInterval, reconnectBaseMs?:number, reconnectMaxMs?:number, pollMs?:number, preferHttpCommands?:boolean}} [options]
+     * @param {{WebSocket?:any, fetch?:typeof fetch, location?:{protocol:string,host:string}, setTimeout?:typeof setTimeout, clearTimeout?:typeof clearTimeout, setInterval?:typeof setInterval, clearInterval?:typeof clearInterval, reconnectBaseMs?:number, reconnectMaxMs?:number, pollMs?:number, wallNow?:()=>number}} [options]
      */
     constructor(store, options = {}) {
       this.store = store;
@@ -21,20 +41,18 @@
       this.clearTimeoutFn = options.clearTimeout || root.clearTimeout.bind(root);
       this.setIntervalFn = options.setInterval || root.setInterval.bind(root);
       this.clearIntervalFn = options.clearInterval || root.clearInterval.bind(root);
+      this.wallNow = options.wallNow || (() => Date.now());
       this.reconnectBaseMs = options.reconnectBaseMs || 500;
       this.reconnectMaxMs = options.reconnectMaxMs || 10000;
       this.pollMs = options.pollMs || 1000;
-      // Durable control channel preference. Defaults to false so legacy
-      // targets keep websocket-first commands; the app flips this to true once
-      // the device advertises single-run CSV support (Feather) where the HTTP
-      // command route returns honest, queued execution status.
-      this.preferHttpCommands = options.preferHttpCommands === true;
       this.socket = null;
       this.reconnectTimer = null;
       this.pollTimer = null;
       this.polling = false;
       this.stopped = true;
       this.attempt = 0;
+      /** @type {Promise<{deviceId:string, bootId:string, runId:number}> | null} */
+      this.infoPromise = null;
     }
 
     start() {
@@ -167,48 +185,169 @@
     }
 
     /**
-     * Reads a failed command response body for a meaningful device detail.
-     * @param {any} response
+     * Snapshot the authoritative current device identity. This deliberately
+     * reads the current-device profile (never a viewed archive) and is called
+     * synchronously before a command is built.
+     * @returns {{deviceId:string, bootId:string, runId:number} | null}
      */
-    async readCommandError(response) {
-      if (!response || typeof response.json !== 'function') return null;
-      try {
-        return api.readErrorDetail(await response.json());
-      } catch {
+    captureDeviceContext() {
+      const device = this.store.device;
+      const runId = this.store.run && this.store.run.id;
+      if (!device
+          || typeof device.deviceId !== 'string'
+          || typeof device.bootId !== 'string'
+          || !DEVICE_ID_PATTERN.test(device.deviceId)
+          || !BOOT_ID_PATTERN.test(device.bootId)
+          || typeof runId !== 'number'
+          || !Number.isSafeInteger(runId)
+          || runId < 0) {
         return null;
       }
+      return Object.freeze({ deviceId: device.deviceId, bootId: device.bootId, runId });
     }
 
-    /** @param {Readonly<{type:string, value?:string}>} command */
-    async send(command) {
-      const validated = api.createCommand(command.type, command.value);
-      const payload = JSON.stringify(validated);
-      if (payload.length > 256) throw new api.ProtocolError('command exceeds 256-byte device limit');
-
-      const openState = this.WebSocketClass && this.WebSocketClass.OPEN !== undefined
-        ? this.WebSocketClass.OPEN
-        : 1;
-      const socketReady = Boolean(this.socket && this.socket.readyState === openState);
-      const useHttp = Boolean(this.fetchFn) && (this.preferHttpCommands || !socketReady);
-      if (!useHttp) {
-        if (socketReady) {
-          this.socket.send(payload);
-          return Object.freeze({ channel: 'websocket', pending: true });
+    /**
+     * Unknown command context blocks until GET /api/info supplies the
+     * authoritative hello. Concurrent callers share one request.
+     * @returns {Promise<{deviceId:string, bootId:string, runId:number}>}
+     */
+    ensureDeviceContext() {
+      if (!this.fetchFn) return Promise.reject(new Error('no command transport available'));
+      if (this.infoPromise) return this.infoPromise;
+      const pending = (async () => {
+        const response = await this.fetchFn('/api/info', { cache: 'no-store' });
+        let body;
+        try {
+          body = await response.json();
+        } catch {
+          throw new api.ProtocolError(`GET /api/info returned invalid JSON (HTTP ${response.status})`);
         }
-        throw new Error('no command transport available');
-      }
-      const response = await this.fetchFn('/api/cmd', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
+        if (!response.ok) {
+          const detail = api.readErrorDetail(body);
+          throw new api.ProtocolError(
+            `GET /api/info returned ${response.status}${detail ? `: ${detail}` : ''}`,
+          );
+        }
+        this.store.handle(body);
+        const context = this.captureDeviceContext();
+        if (!context) {
+          throw new api.ProtocolError('GET /api/info did not provide a usable device identity');
+        }
+        return context;
+      })().finally(() => {
+        this.infoPromise = null;
       });
+      this.infoPromise = pending;
+      return pending;
+    }
+
+    /**
+     * @param {any} response
+     * @param {string} requestId
+     * @param {number | undefined} expectedTargetRunId
+     * @param {boolean} [inactiveTarget]
+     */
+    async readCommandResult(response, requestId, expectedTargetRunId, inactiveTarget = false) {
+      let body;
+      try {
+        body = await response.json();
+      } catch {
+        throw new api.ProtocolError(
+          `command rejected (HTTP ${response.status}): response was not valid JSON`,
+        );
+      }
+
       if (!response.ok) {
-        const detail = await this.readCommandError(response);
+        if (body && typeof body === 'object' && body.type === 'error') {
+          const failure = api.parseError(body, requestId);
+          throw new api.ProtocolError(
+            `command rejected (HTTP ${response.status}): ${failure.code}: ${failure.message}`,
+          );
+        }
+        if (body && typeof body === 'object' && body.type === 'command.result') {
+          const failure = api.parseCommandResult(body, {
+            requestId,
+            targetRunId: expectedTargetRunId,
+            inactiveTarget,
+          });
+          if (failure.ok === false) {
+            throw new api.ProtocolError(`command rejected (HTTP ${response.status}): ${failure.errorCode}`);
+          }
+        }
+        const detail = api.readErrorDetail(body);
         throw new api.ProtocolError(
           `command rejected (HTTP ${response.status})${detail ? `: ${detail}` : ''}`,
         );
       }
-      return Object.freeze({ channel: 'http', pending: true });
+
+      const result = api.parseCommandResult(body, {
+        requestId,
+        targetRunId: expectedTargetRunId,
+        inactiveTarget,
+      });
+      if (result.ok !== true) {
+        throw new api.ProtocolError(`command rejected: ${result.errorCode}`);
+      }
+      return result;
+    }
+
+    /**
+     * Commands always travel over POST /api/cmd, even while the websocket is
+     * connected. Identity, bootId, latest runId and the device header are
+     * captured once, before the request starts, so a device switch cannot
+     * retarget an in-flight command.
+     * @param {{type:'run.start'|'run.stop'|'preset', value?:string}} command
+     */
+    async send(command) {
+      if (!command || typeof command !== 'object') {
+        throw new api.ProtocolError('command must be an object');
+      }
+      const type = command.type;
+      if (type !== 'run.start' && type !== 'run.stop' && type !== 'preset') {
+        throw new api.ProtocolError(`invalid command ${type}`);
+      }
+      if (type === 'preset' && (typeof command.value !== 'string' || command.value.length === 0)) {
+        throw new api.ProtocolError('invalid command preset');
+      }
+      if (!this.fetchFn) throw new Error('no command transport available');
+
+      // Synchronous capture: if the device identity is already authoritative,
+      // nothing below may rebind it after an await.
+      let context = this.captureDeviceContext();
+      if (!context) context = await this.ensureDeviceContext();
+
+      const requestId = api.createOperationId();
+      /** @type {{requestId:string, bootId:string, runId:number, wallStartUtcMs?:number}} */
+      const commandContext = { requestId, bootId: context.bootId, runId: context.runId };
+      if (type === 'run.start') commandContext.wallStartUtcMs = this.wallNow();
+      const payload = api.createCommand(type, commandContext, command.value);
+      const body = JSON.stringify(payload);
+      if (utf8ByteLength(body) > MAX_COMMAND_BYTES) {
+        throw new api.ProtocolError('command exceeds 256-byte device limit');
+      }
+      const headers = Object.freeze({
+        'Content-Type': 'application/json',
+        'X-PyroVue-Device-Id': context.deviceId,
+      });
+
+      const response = await this.fetchFn('/api/cmd', {
+        method: 'POST',
+        headers,
+        body,
+      });
+      const expectedTargetRunId = type === 'run.stop'
+        ? context.runId
+        : type === 'preset' ? 0 : undefined;
+      const result = await this.readCommandResult(
+        response,
+        requestId,
+        expectedTargetRunId,
+        type === 'run.stop',
+      );
+      if (type === 'run.start' && result.targetRunId < 1) {
+        throw new api.ProtocolError('command result did not identify the started run');
+      }
+      return result;
     }
   }
 

@@ -95,11 +95,35 @@ function stubCanvas(width = 800, height = 480) {
 function hello(overrides = {}) {
   return {
     type: 'hello',
-    protocol: 2,
+    protocol: 3,
     firmware: 'rework-2',
     sampleHz: 2,
     runId: 17,
     runActive: true,
+    deviceId: 'a1b2c3d4e5f6',
+    bootId: '0123456789abcdef',
+    capabilities: { runArchive: true },
+    acquireIntervalMs: 500,
+    logIntervalMs: 2000,
+    maxRunMs: 86400000,
+    logging: {
+      state: 'recording',
+      durableLogSeq: 0,
+      latestAcqSeq: 0,
+      bufferedRecords: 0,
+      acquisitionGaps: 0,
+      droppedAcquired: 0,
+      queueHighWater: 0,
+      errorCode: null,
+    },
+    storage: {
+      mounted: true,
+      totalBytes: 8192000,
+      usedBytes: 4096,
+      freeBytes: 8187904,
+      reservedRemainingBytes: 32768,
+      startRequiredBytes: 2416640,
+    },
     runStartMs: 0,
     recentWindowMs: 600000,
     coarseResolutionMs: 30000,
@@ -114,14 +138,14 @@ function canonicalPoints(overrides = {}) {
   store.handle(hello(overrides.hello));
   store.handle({
     type: 'history.begin',
-    protocol: 2,
+    protocol: 3,
     snapshotId: 7,
     runId: 17,
     throughSeq: 0,
   });
   store.handle({
     type: 'history',
-    protocol: 2,
+    protocol: 3,
     snapshotId: 7,
     runId: 17,
     kind: 'coarse',
@@ -135,7 +159,7 @@ function canonicalPoints(overrides = {}) {
   });
   store.handle({
     type: 'history',
-    protocol: 2,
+    protocol: 3,
     snapshotId: 7,
     runId: 17,
     kind: 'raw',
@@ -147,7 +171,7 @@ function canonicalPoints(overrides = {}) {
       { seq: 2, ms: 31000, temp: 205, fault: 0 },
     ],
   });
-  store.handle({ type: 'history.end', protocol: 2, snapshotId: 7, runId: 17, throughSeq: 2 });
+  store.handle({ type: 'history.end', protocol: 3, snapshotId: 7, runId: 17, throughSeq: 2 });
   return store.telemetry.getChartData();
 }
 

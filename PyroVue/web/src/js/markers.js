@@ -6,7 +6,6 @@
   root.PyroVue = api;
   const STORAGE_KEY = 'pyrovue.markers.v1';
   const MAX_NOTE_LENGTH = 500;
-  let fallbackIdCounter = 0;
 
   /** @param {unknown} value */
   function validRunId(value) {
@@ -114,15 +113,13 @@
     }
 
     newId() {
+      if (typeof api.createOperationId !== 'function') {
+        throw new Error('protocol.js must load before markers.js');
+      }
       /** @type {string} */
       let id;
       do {
-        if (root.crypto && typeof root.crypto.randomUUID === 'function') {
-          id = root.crypto.randomUUID();
-        } else {
-          fallbackIdCounter += 1;
-          id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${fallbackIdCounter.toString(36)}`;
-        }
+        id = api.createOperationId();
       } while (this.markers.some((marker) => marker.id === id));
       return id;
     }

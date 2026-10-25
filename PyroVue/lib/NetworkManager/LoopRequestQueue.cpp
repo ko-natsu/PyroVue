@@ -1,8 +1,9 @@
 #include "LoopRequestQueue.h"
+#if defined(PYROVUE_SINGLE_RUN_CSV)
+#include "config.h"
 #include <ArduinoJson.h>
 #include <stdio.h>
 #include <string.h>
-#if defined(PYROVUE_SINGLE_RUN_CSV)
 #include "SingleRunCsv.h"
 #include "WebResponseImpl.h"
 
@@ -34,7 +35,6 @@ private:
     std::shared_ptr<CsvDownloadBuffer> buffer;
 };
 }
-#endif
 
 LoopRequestQueue::Job* LoopRequestQueue::reserve() {
 #if defined(ARDUINO_ARCH_ESP8266)
@@ -58,8 +58,10 @@ LoopRequestQueue::Job* LoopRequestQueue::reserve() {
 }
 
 void LoopRequestQueue::sendError(AsyncWebServerRequest* request, uint16_t status, const char* code) {
-    char body[160];
-    snprintf(body, sizeof(body), "{\"ok\":false,\"code\":\"%s\",\"message\":\"%s\"}", code, code);
+    char body[224];
+    snprintf(body, sizeof(body),
+             "{\"type\":\"error\",\"protocol\":%u,\"code\":\"%s\",\"message\":\"%s\"}",
+             PROTOCOL_VERSION, code, code);
     AsyncWebServerResponse* response = request->beginResponse(status, "application/json", body);
     response->addHeader("Cache-Control", "no-store");
     request->send(response);
@@ -67,7 +69,7 @@ void LoopRequestQueue::sendError(AsyncWebServerRequest* request, uint16_t status
 
 bool LoopRequestQueue::enqueue(Kind kind, AsyncWebServerRequest* request, uint32_t runId,
                                const uint8_t* data, size_t length) {
-    if (length > 256 || (length && (!data || memchr(data, 0, length)))) {
+    if (length > 64 || (length && (!data || memchr(data, 0, length)))) {
         if (request) sendError(request, 400, "INVALID_REQUEST");
         return false;
     }
@@ -86,7 +88,6 @@ bool LoopRequestQueue::enqueue(Kind kind, AsyncWebServerRequest* request, uint32
     job->ticket = nextTicket.fetch_add(1, std::memory_order_relaxed);
 #endif
     job->runId = runId;
-    job->http = request != nullptr;
     job->request = request ? request->pause() : AsyncWebServerRequestPtr{};
     if (length) memcpy(job->command, data, length);
     job->command[length] = '\0';
@@ -94,41 +95,7 @@ bool LoopRequestQueue::enqueue(Kind kind, AsyncWebServerRequest* request, uint32
     return true;
 }
 
-bool LoopRequestQueue::enqueueCommand(const uint8_t* data, size_t length) {
-    return length != 0 && enqueue(Kind::Command, nullptr, 0, data, length);
-}
-
-void LoopRequestQueue::begin(AsyncWebServer& server,
-                             std::function<NetworkCommandResult(const char*)>& command,
-                             std::function<void()> changed,
-                             std::function<void(const char*)> wsError,
-                             std::function<bool()> acquire,
-                             std::function<void()> release,
-                             std::function<void(AsyncWebServerRequest*, bool)> read) {
-    commandHandler = &command;
-    stateChanged = changed;
-    websocketError = wsError;
-    acquireState = acquire;
-    releaseState = release;
-    readDevice = read;
-    server.on("/api/info", HTTP_GET, [this](AsyncWebServerRequest* request) {
-        enqueue(Kind::DeviceInfo, request);
-    });
-    server.on("/api/now", HTTP_GET, [this](AsyncWebServerRequest* request) {
-        enqueue(Kind::Now, request);
-    });
-    server.on("/api/cmd", HTTP_POST, [](AsyncWebServerRequest* request) {
-        if (!request->contentLength()) sendError(request, 400, "INVALID_REQUEST");
-    }, nullptr, [this](AsyncWebServerRequest* request, uint8_t* data, size_t length,
-                       size_t index, size_t total) {
-        if (index) return; // A rejected fragmented command has already received its error.
-        if (!total || length != total || total > 256) {
-            sendError(request, 400, "INVALID_REQUEST");
-            return;
-        }
-        enqueue(Kind::Command, request, 0, data, length);
-    });
-#if defined(PYROVUE_SINGLE_RUN_CSV)
+void LoopRequestQueue::begin(AsyncWebServer& server) {
     server.on("/api/csv", HTTP_GET, [this](AsyncWebServerRequest* request) {
         enqueue(Kind::Info, request);
     });
@@ -153,7 +120,6 @@ void LoopRequestQueue::begin(AsyncWebServer& server,
         }
         enqueue(Kind::Format, request, 0, data, length);
     });
-#endif
 }
 
 void LoopRequestQueue::execute(Job& job) {
@@ -161,27 +127,6 @@ void LoopRequestQueue::execute(Job& job) {
     const auto connected = [&request]() {
         return request && request->client() && request->client()->connected();
     };
-    if (job.kind == Kind::Command) {
-        const NetworkCommandResult result = commandHandler && *commandHandler
-            ? (*commandHandler)(job.command) : NetworkCommandResult{503, "COMMAND_UNAVAILABLE"};
-        // A failed durable Stop can still end the run; publish actual state,
-        // independently of whether its storage acknowledgment succeeded.
-        if (stateChanged) stateChanged();
-        if (result.status < 300) {
-            if (connected()) {
-                auto* response = request->beginResponse(result.status, "application/json", "{\"ok\":true}");
-                response->addHeader("Cache-Control", "no-store");
-                request->send(response);
-            }
-        } else if (connected()) sendError(request.get(), result.status, result.error);
-        else if (!job.http && websocketError) websocketError(result.error);
-        return;
-    }
-    if (job.kind == Kind::DeviceInfo || job.kind == Kind::Now) {
-        if (connected() && readDevice) readDevice(request.get(), job.kind == Kind::DeviceInfo);
-        return;
-    }
-#if defined(PYROVUE_SINGLE_RUN_CSV)
     // Accepted mutations still execute after disconnect; abandoned GETs do no flash work.
     if (!connected() && (job.kind == Kind::Info || job.kind == Kind::Download)) return;
     if (!csv) {
@@ -271,9 +216,6 @@ void LoopRequestQueue::execute(Job& job) {
             request->send(response);
         }
     }
-#else
-    (void)connected;
-#endif
 }
 
 void LoopRequestQueue::poll() {
@@ -288,11 +230,7 @@ void LoopRequestQueue::poll() {
             (!oldest || static_cast<int32_t>(job.ticket - oldest->ticket) < 0)) oldest = &job;
     }
     if (!oldest) return;
-    const bool needsState = oldest->kind == Kind::Command || oldest->kind == Kind::DeviceInfo ||
-                            oldest->kind == Kind::Now;
-    if (needsState && acquireState && !acquireState()) return;
     execute(*oldest);
-    if (needsState && releaseState) releaseState();
     oldest->request.reset();
     oldest->state.store(SlotState::Free, std::memory_order_release);
 }
@@ -336,3 +274,4 @@ void LoopRequestQueue::pollDownload() {
     download->publish(read);
 }
 #endif
+#endif // PYROVUE_SINGLE_RUN_CSV

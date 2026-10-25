@@ -37,6 +37,34 @@ enum class ArchiveError : uint8_t {
     BODY_TOO_LARGE, INVALID_CURSOR, BUSY, STORAGE_UNAVAILABLE, WRITE_FAILED,
     INSUFFICIENT_STORAGE, EVENT_BUDGET_EXHAUSTED, RUN_ID_SAVE_FAILED, RUN_ID_EXHAUSTED
 };
+
+inline const char* archiveErrorName(ArchiveError error) {
+    switch (error) {
+        case ArchiveError::NONE: return nullptr;
+        case ArchiveError::INVALID_REQUEST: return "INVALID_REQUEST";
+        case ArchiveError::RUN_NOT_FOUND: return "RUN_NOT_FOUND";
+        case ArchiveError::MARKER_NOT_FOUND: return "MARKER_NOT_FOUND";
+        case ArchiveError::ARCHIVE_UNAVAILABLE: return "ARCHIVE_UNAVAILABLE";
+        case ArchiveError::RUN_ACTIVE: return "RUN_ACTIVE";
+        case ArchiveError::RUN_ID_CONFLICT: return "RUN_ID_CONFLICT";
+        case ArchiveError::REVISION_CONFLICT: return "REVISION_CONFLICT";
+        case ArchiveError::OPERATION_ID_CONFLICT: return "OPERATION_ID_CONFLICT";
+        case ArchiveError::EVENT_TIME_OUT_OF_RANGE: return "EVENT_TIME_OUT_OF_RANGE";
+        case ArchiveError::CORRUPT_RUN: return "CORRUPT_RUN";
+        case ArchiveError::STALE_COMMAND: return "STALE_COMMAND";
+        case ArchiveError::DEVICE_ID_MISMATCH: return "DEVICE_ID_MISMATCH";
+        case ArchiveError::BODY_TOO_LARGE: return "BODY_TOO_LARGE";
+        case ArchiveError::INVALID_CURSOR: return "INVALID_CURSOR";
+        case ArchiveError::BUSY: return "BUSY";
+        case ArchiveError::STORAGE_UNAVAILABLE: return "STORAGE_UNAVAILABLE";
+        case ArchiveError::WRITE_FAILED: return "WRITE_FAILED";
+        case ArchiveError::INSUFFICIENT_STORAGE: return "INSUFFICIENT_STORAGE";
+        case ArchiveError::EVENT_BUDGET_EXHAUSTED: return "EVENT_BUDGET_EXHAUSTED";
+        case ArchiveError::RUN_ID_SAVE_FAILED: return "RUN_ID_SAVE_FAILED";
+        case ArchiveError::RUN_ID_EXHAUSTED: return "RUN_ID_EXHAUSTED";
+    }
+    return "INVALID_REQUEST";
+}
 enum class WallTimeSource : uint8_t { Unavailable, ClientEstimated };
 enum class TimeBasis : uint8_t { Estimated, Manual, Untimed };
 enum class MarkerMutationKind : uint8_t { Create, Update, Delete };

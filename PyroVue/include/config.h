@@ -55,7 +55,7 @@
 #endif
 #define ESP8266_RAW_HISTORY_CAPACITY (SAMPLE_HZ * 300)
 #define HISTORY_CHUNK_BYTES       1024
-#define PROTOCOL_VERSION          2
-#define FIRMWARE_VERSION          "rework-2"
+#define PROTOCOL_VERSION          3
+#define FIRMWARE_VERSION          "run-logging-1"
 
 #endif // CONFIG_H

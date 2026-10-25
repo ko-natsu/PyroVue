@@ -187,6 +187,30 @@
         protocol: api.PROTOCOL_VERSION,
         firmware: '',
         sampleHz: 2,
+        deviceId: '',
+        bootId: '',
+        capabilities: Object.freeze({ runArchive: false }),
+        acquireIntervalMs: 0,
+        logIntervalMs: 0,
+        maxRunMs: 0,
+        logging: Object.freeze({
+          state: 'unavailable',
+          durableLogSeq: 0,
+          latestAcqSeq: 0,
+          bufferedRecords: 0,
+          acquisitionGaps: 0,
+          droppedAcquired: 0,
+          queueHighWater: 0,
+          errorCode: null,
+        }),
+        storage: Object.freeze({
+          mounted: false,
+          totalBytes: 0,
+          usedBytes: 0,
+          freeBytes: 0,
+          reservedRemainingBytes: 0,
+          startRequiredBytes: 0,
+        }),
         recentWindowMs: 0,
         coarseResolutionMs: 30000,
         preset: '',
@@ -251,10 +275,37 @@
         case 'hello':
           this.updateRun(message.runId, message.runActive);
           this.snapshot.abort();
+          // The hello profile describes the CURRENT device, independent of any
+          // historical run the user may be viewing. Keep it in one place so
+          // command identity is never derived from a viewed archive.
           this.device = {
             protocol: message.protocol,
             firmware: message.firmware,
             sampleHz: message.sampleHz,
+            deviceId: message.deviceId,
+            bootId: message.bootId,
+            capabilities: Object.freeze({ runArchive: message.capabilities.runArchive }),
+            acquireIntervalMs: message.acquireIntervalMs,
+            logIntervalMs: message.logIntervalMs,
+            maxRunMs: message.maxRunMs,
+            logging: Object.freeze({
+              state: message.logging.state,
+              durableLogSeq: message.logging.durableLogSeq,
+              latestAcqSeq: message.logging.latestAcqSeq,
+              bufferedRecords: message.logging.bufferedRecords,
+              acquisitionGaps: message.logging.acquisitionGaps,
+              droppedAcquired: message.logging.droppedAcquired,
+              queueHighWater: message.logging.queueHighWater,
+              errorCode: message.logging.errorCode,
+            }),
+            storage: Object.freeze({
+              mounted: message.storage.mounted,
+              totalBytes: message.storage.totalBytes,
+              usedBytes: message.storage.usedBytes,
+              freeBytes: message.storage.freeBytes,
+              reservedRemainingBytes: message.storage.reservedRemainingBytes,
+              startRequiredBytes: message.storage.startRequiredBytes,
+            }),
             recentWindowMs: message.recentWindowMs ?? this.device.recentWindowMs,
             coarseResolutionMs: message.coarseResolutionMs ?? this.device.coarseResolutionMs,
             preset: typeof message.preset === 'string' ? message.preset : this.device.preset,

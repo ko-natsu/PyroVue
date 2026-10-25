@@ -7,7 +7,10 @@ require('../src/js/protocol.js');
 require('../src/js/state.js');
 require('../src/js/transport.js');
 
-const { AppStore, DeviceTransport, createCommand } = globalThis.PyroVue;
+const { AppStore, DeviceTransport } = globalThis.PyroVue;
+
+const DEVICE_ID = 'a1b2c3d4e5f6';
+const BOOT_ID = '0123456789abcdef';
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -43,10 +46,66 @@ class FakeWebSocket {
   }
 }
 
-function hello() {
+function hello(overrides = {}) {
   return {
-    type: 'hello', protocol: 2, firmware: 'rework-2', sampleHz: 2, runId: 9, runActive: true,
-    runStartMs: 0, recentWindowMs: 600000, coarseResolutionMs: 30000, snapshotThroughSeq: 0,
+    type: 'hello',
+    protocol: 3,
+    firmware: 'run-logging-1',
+    sampleHz: 2,
+    runId: 9,
+    runActive: true,
+    deviceId: DEVICE_ID,
+    bootId: BOOT_ID,
+    capabilities: { runArchive: true },
+    acquireIntervalMs: 500,
+    logIntervalMs: 2000,
+    maxRunMs: 86400000,
+    logging: {
+      state: 'recording',
+      durableLogSeq: 4,
+      latestAcqSeq: 4,
+      bufferedRecords: 0,
+      acquisitionGaps: 0,
+      droppedAcquired: 0,
+      queueHighWater: 1,
+      errorCode: null,
+    },
+    storage: {
+      mounted: true,
+      totalBytes: 8192000,
+      usedBytes: 4096,
+      freeBytes: 8187904,
+      reservedRemainingBytes: 32768,
+      startRequiredBytes: 2416640,
+    },
+    runStartMs: 0,
+    recentWindowMs: 600000,
+    coarseResolutionMs: 30000,
+    snapshotThroughSeq: 0,
+    ...overrides,
+  };
+}
+
+function jsonResponse(status, body) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function commandResult(request, overrides = {}) {
+  return {
+    type: 'command.result',
+    protocol: 3,
+    requestId: request.requestId,
+    ok: true,
+    runId: request.type === 'run.stop' ? request.runId : 10,
+    runActive: request.type !== 'run.stop',
+    targetRunId: request.type === 'run.stop'
+      ? request.runId
+      : request.type === 'preset' ? 0 : 10,
+    durable: true,
+    ...overrides,
   };
 }
 
@@ -58,15 +117,12 @@ test('reconnects with polling fallback after socket loss', async () => {
   const fetch = async (url) => {
     requests.push(url);
     if (url === '/api/info') {
-      return { ok: true, status: 200, json: async () => ({
-        type: 'hello', protocol: 2, firmware: 'rework-2', sampleHz: 2,
-        runId: 9, runActive: true, clients: 0, preset: 'slow',
-      }) };
+      return jsonResponse(200, hello({ runActive: true, clients: 0, preset: 'slow' }));
     }
-    return { ok: true, status: 200, json: async () => ({
-      type: 'sample', protocol: 2, runId: 9, runActive: true,
+    return jsonResponse(200, {
+      type: 'sample', protocol: 3, runId: 9, runActive: true,
       seq: 4, ms: 2000, temp: 100, fault: 0,
-    }) };
+    });
   };
   const store = new AppStore({ now: () => 0, wallNow: () => 10000 });
   const transport = new DeviceTransport(store, {
@@ -86,6 +142,8 @@ test('reconnects with polling fallback after socket loss', async () => {
   FakeWebSocket.instances[0].open();
   FakeWebSocket.instances[0].receive(hello());
   assert.equal(store.run.id, 9);
+  assert.equal(store.device.deviceId, DEVICE_ID);
+  assert.equal(store.device.bootId, BOOT_ID);
 
   FakeWebSocket.instances[0].disconnect();
   await new Promise((resolve) => setImmediate(resolve));
@@ -101,12 +159,14 @@ test('reconnects with polling fallback after socket loss', async () => {
   transport.stop();
 });
 
-test('uses websocket first and HTTP fallback for pending commands', async () => {
+test('commands always use HTTP even while the websocket is connected', async () => {
   FakeWebSocket.instances.length = 0;
   const posts = [];
-  const fetch = async (url, options) => {
-    posts.push({ url, options });
-    return { ok: true, status: 200 };
+  const fetch = async (url, options = {}) => {
+    assert.equal(url, '/api/cmd');
+    const body = JSON.parse(options.body);
+    posts.push({ url, options, body });
+    return jsonResponse(200, commandResult(body));
   };
   const store = new AppStore();
   const transport = new DeviceTransport(store, {
@@ -117,21 +177,176 @@ test('uses websocket first and HTTP fallback for pending commands', async () => 
     clearTimeout: () => {},
     setInterval: () => 1,
     clearInterval: () => {},
+    wallNow: () => 1700000000000,
   });
 
   transport.start();
   const socket = FakeWebSocket.instances[0];
   socket.open();
-  const websocketResult = await transport.send(createCommand('run.start'));
-  assert.deepEqual(websocketResult, { channel: 'websocket', pending: true });
-  assert.deepEqual(JSON.parse(socket.sent[0]), { type: 'run.start' });
+  socket.receive(hello());
 
-  socket.readyState = 3;
-  const httpResult = await transport.send(createCommand('run.stop'));
-  assert.deepEqual(httpResult, { channel: 'http', pending: true });
+  const start = await transport.send({ type: 'run.start' });
+  assert.equal(socket.sent.length, 0, 'websocket is never used for commands');
   assert.equal(posts[0].url, '/api/cmd');
-  assert.deepEqual(JSON.parse(posts[0].options.body), { type: 'run.stop' });
+  assert.equal(posts[0].options.method, 'POST');
+  assert.equal(posts[0].options.headers['X-PyroVue-Device-Id'], DEVICE_ID);
+  assert.equal(posts[0].options.headers['Content-Type'], 'application/json');
+  assert.equal(posts[0].body.type, 'run.start');
+  assert.equal(posts[0].body.bootId, BOOT_ID);
+  assert.equal(posts[0].body.afterRunId, 9);
+  assert.equal(posts[0].body.wallStartUtcMs, 1700000000000);
+  assert.match(posts[0].body.requestId, /^[A-Za-z0-9_-]{1,80}$/);
+  assert.deepEqual(start, commandResult(posts[0].body));
+
+  const stop = await transport.send({ type: 'run.stop' });
+  assert.equal(posts[1].body.type, 'run.stop');
+  assert.equal(posts[1].body.runId, 9);
+  assert.equal(posts[1].body.bootId, BOOT_ID);
+  assert.equal(posts[1].options.headers['X-PyroVue-Device-Id'], DEVICE_ID);
+  assert.equal(stop.runActive, false);
+  assert.equal(stop.durable, true);
+  assert.equal(socket.sent.length, 0);
   transport.stop();
+});
+
+test('unknown command context waits for authoritative /api/info identity', async () => {
+  const calls = [];
+  const fetch = async (url, options = {}) => {
+    calls.push(url);
+    if (url === '/api/info') {
+      return jsonResponse(200, hello({
+        deviceId: 'bbbbbbbbbbbb',
+        bootId: 'fedcba9876543210',
+        runId: 42,
+        runActive: false,
+      }));
+    }
+    assert.equal(url, '/api/cmd');
+    const body = JSON.parse(options.body);
+    assert.equal(options.headers['X-PyroVue-Device-Id'], 'bbbbbbbbbbbb');
+    assert.equal(body.bootId, 'fedcba9876543210');
+    assert.equal(body.afterRunId, 42);
+    return jsonResponse(200, commandResult(body, { runId: 43, targetRunId: 43, runActive: true }));
+  };
+  const store = new AppStore();
+  const transport = new DeviceTransport(store, { fetch, wallNow: () => 1234 });
+
+  const result = await transport.send({ type: 'run.start' });
+  assert.deepEqual(calls, ['/api/info', '/api/cmd']);
+  assert.equal(result.runId, 43);
+  assert.equal(store.device.deviceId, 'bbbbbbbbbbbb');
+  assert.equal(store.run.id, 42);
+});
+
+test('captures device identity once and never rebinds after a device switch', async () => {
+  const posts = [];
+  let resolveResponse;
+  const responsePromise = new Promise((resolve) => { resolveResponse = resolve; });
+  const fetch = async (url, options = {}) => {
+    assert.equal(url, '/api/cmd');
+    const body = JSON.parse(options.body);
+    posts.push({ url, options, body });
+    return responsePromise;
+  };
+  const store = new AppStore();
+  store.handle(hello());
+  const transport = new DeviceTransport(store, { fetch, wallNow: () => 999 });
+
+  const sending = transport.send({ type: 'run.start' });
+  assert.equal(posts.length, 1, 'command is built before awaiting the response');
+  const sent = posts[0];
+
+  // A device switch while the HTTP request is in flight must not rewrite the
+  // already-bound header, bootId, or afterRunId.
+  store.handle(hello({
+    deviceId: 'cccccccccccc',
+    bootId: '1111222233334444',
+    runId: 55,
+  }));
+  resolveResponse(jsonResponse(200, commandResult(sent.body, { runId: 10, targetRunId: 10 })));
+  const result = await sending;
+
+  assert.equal(sent.options.headers['X-PyroVue-Device-Id'], DEVICE_ID);
+  assert.equal(sent.body.bootId, BOOT_ID);
+  assert.equal(sent.body.afterRunId, 9);
+  assert.equal(result.requestId, sent.body.requestId);
+});
+
+test('surfaces the actual HTTP command error without retrying', async () => {
+  const posts = [];
+  const fetch = async (url, options = {}) => {
+    posts.push({ url, options, body: JSON.parse(options.body) });
+    return jsonResponse(409, {
+      type: 'error',
+      protocol: 3,
+      code: 'STALE_COMMAND',
+      message: 'start afterRunId is not the latest allocated run',
+    });
+  };
+  const store = new AppStore();
+  store.handle(hello());
+  const transport = new DeviceTransport(store, { fetch, wallNow: () => 1 });
+
+  await assert.rejects(
+    transport.send({ type: 'run.start' }),
+    /HTTP 409.*STALE_COMMAND.*start afterRunId/,
+  );
+  assert.equal(posts.length, 1, 'no automatic ambiguous retry');
+  assert.equal(posts[0].options.headers['X-PyroVue-Device-Id'], DEVICE_ID);
+});
+
+test('validates command responses even on non-2xx and mismatched request identities', async () => {
+  const posts = [];
+  let mode = 'text';
+  const fetch = async (url, options = {}) => {
+    const body = JSON.parse(options.body);
+    posts.push({ url, options, body });
+    if (mode === 'text') return new Response('device exploded', { status: 503 });
+    if (mode === 'requestId') {
+      return jsonResponse(200, commandResult({ requestId: 'some-other-request' }));
+    }
+    return jsonResponse(200, commandResult(body, { targetRunId: 99 }));
+  };
+  const store = new AppStore();
+  store.handle(hello());
+  const transport = new DeviceTransport(store, { fetch, wallNow: () => 1 });
+
+  await assert.rejects(
+    transport.send({ type: 'run.start' }),
+    /HTTP 503.*not valid JSON/,
+  );
+
+  mode = 'requestId';
+  await assert.rejects(
+    transport.send({ type: 'run.start' }),
+    /requestId .* does not match/,
+  );
+
+  mode = 'target';
+  await assert.rejects(
+    transport.send({ type: 'run.stop' }),
+    /targetRunId/,
+  );
+  assert.equal(posts.length, 3);
+});
+
+test('enforces the UTF-8 byte limit rather than JavaScript code units', async () => {
+  const posts = [];
+  const fetch = async (url, options = {}) => {
+    posts.push({ url, options });
+    throw new Error('must not reach the device');
+  };
+  const store = new AppStore();
+  store.handle(hello());
+  const transport = new DeviceTransport(store, { fetch, wallNow: () => 1 });
+
+  // 60 four-byte emoji are 120 JS code units but 240 bytes in the value alone,
+  // which pushes the JSON body past the 256-byte device limit.
+  await assert.rejects(
+    transport.send({ type: 'preset', value: '😀'.repeat(60) }),
+    /256-byte device limit/,
+  );
+  assert.equal(posts.length, 0);
 });
 
 test('syncState reconciles over HTTP while websocket stays connected', async () => {
@@ -140,15 +355,12 @@ test('syncState reconciles over HTTP while websocket stays connected', async () 
   const fetch = async (url) => {
     requests.push(url);
     if (url === '/api/info') {
-      return { ok: true, status: 200, json: async () => ({
-        type: 'hello', protocol: 2, firmware: 'rework-2', sampleHz: 2,
-        runId: 3, runActive: true, clients: 1, preset: 'slow',
-      }) };
+      return jsonResponse(200, hello({ runId: 3, runActive: true, clients: 1, preset: 'slow' }));
     }
-    return { ok: true, status: 200, json: async () => ({
-      type: 'sample', protocol: 2, runId: 3, runActive: true,
+    return jsonResponse(200, {
+      type: 'sample', protocol: 3, runId: 3, runActive: true,
       seq: 8, ms: 4000, temp: 125, fault: 0,
-    }) };
+    });
   };
   const store = new AppStore({ now: () => 4000, wallNow: () => 8000 });
   const transport = new DeviceTransport(store, {
@@ -164,7 +376,7 @@ test('syncState reconciles over HTTP while websocket stays connected', async () 
   transport.start();
   const socket = FakeWebSocket.instances[0];
   socket.open();
-  socket.receive(hello());
+  socket.receive(hello({ runId: 3, runActive: true }));
   const phase = store.connection.phase;
   const channel = store.connection.channel;
   assert.equal(transport.pollTimer, null);
@@ -180,17 +392,3 @@ test('syncState reconciles over HTTP while websocket stays connected', async () 
   assert.equal(store.currentReading.sample.seq, 8);
   transport.stop();
 });
-
-test('a refused durable command rejects instead of reporting transport acceptance', async () => {
-  const store = new AppStore();
-  const transport = new DeviceTransport(store, {
-    preferHttpCommands: true,
-    fetch: async () => new Response(JSON.stringify({ code: 'STORAGE_UNAVAILABLE' }), {
-      status: 503,
-      headers: { 'Content-Type': 'application/json' },
-    }),
-  });
-  await assert.rejects(transport.send(createCommand('run.start')), globalThis.PyroVue.ProtocolError);
-  assert.equal(store.run.active, false);
-});
-

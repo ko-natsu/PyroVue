@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+require('../src/js/protocol.js');
 require('../src/js/markers.js');
 const { MarkerStore } = globalThis.PyroVue;
 

@@ -18,8 +18,12 @@ public:
     bool latestReading(TempSample& out) const;
     size_t rawCount() const;
     bool rawAt(size_t oldestIndex, TempSample& out) const;
+    size_t copyRawAfter(uint32_t afterSeq, uint32_t throughSeq,
+                        TempSample* out, size_t capacity) const;
     size_t coarseCount() const;
     bool coarseAt(size_t oldestIndex, CoarseSample& out) const;
+    size_t copyCoarseFrom(uint32_t fromMs, uint32_t throughMs,
+                          CoarseSample* out, size_t capacity) const;
     bool currentBucket(CoarseSample& out) const;
     uint32_t runId() const;
     uint32_t nextSequence() const;

@@ -1,11 +1,18 @@
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include "config.h"
 #include "protocol.h"
 #include "SensorService.h"
 #include "RunManager.h"
 #include "HistoryStore.h"
 #include "NetworkManager.h"
+#include "RunLogTypes.h"
+#if defined(ARDUINO_ARCH_ESP8266)
+#include <ESP8266WiFi.h>
+#else
+#include <WiFi.h>
+#include <esp_mac.h>
+#include <esp_system.h>
+#endif
 #if !defined(PYROVUE_BOARD_N16R8) && !defined(PYROVUE_SINGLE_RUN_CSV)
 #include "LittleFsHistoryPersistence.h"
 #endif
@@ -14,8 +21,10 @@
 #include "FeatherCsvStorage.h"
 #endif
 #if defined(PYROVUE_BOARD_N16R8)
-#include <LittleFS.h>
+#include "RunArchiveStore.h"
+#include "RunLogService.h"
 #include <esp_heap_caps.h>
+#include <esp32s3/spiram.h>
 #endif
 #include "PresetManager.h"
 
@@ -67,8 +76,9 @@ StatusManager statusManager(displayManager);
 PreferencesRunIdStore runIdStore;
 Max31855Sensor thermocouple;
 RunManager runManager(&runIdStore);
+DeviceIdentity deviceIdentity;
 #if defined(PYROVUE_BOARD_N16R8)
-bool archiveHardwareReady = false;
+RunArchiveStore runArchive;
 #elif defined(PYROVUE_SINGLE_RUN_CSV)
 csvrun::FeatherCsvStorage csvStorage;
 csvrun::SingleRunCsv csvRecorder(csvStorage);
@@ -88,6 +98,9 @@ HistoryStore historyStore(rawStorage,
                           RAW_HISTORY_CAPACITY,
 #endif
                           coarseStorage, COARSE_HISTORY_CAPACITY, COARSE_BUCKET_MS);
+#if defined(PYROVUE_BOARD_N16R8)
+RunLogService runLogger(runManager, historyStore, runArchive, deviceIdentity);
+#endif
 PresetManager presetManager;
 NetworkManager networkManager(runManager, historyStore, presetManager);
 #if !defined(PYROVUE_BOARD_N16R8) && !defined(PYROVUE_SINGLE_RUN_CSV)
@@ -105,6 +118,9 @@ class SampleRouter : public ISampleSink {
 public:
     void onSample(const TempSample& sample) override {
         historyStore.push(sample);
+#if defined(PYROVUE_BOARD_N16R8)
+        runLogger.enqueueSample(sample);
+#endif
 #if !defined(PYROVUE_BOARD_N16R8) && !defined(PYROVUE_SINGLE_RUN_CSV)
         persistLatestCoarse();
 #endif
@@ -121,70 +137,119 @@ public:
 SampleRouter sampleRouter;
 SensorService sensorService(thermocouple, runManager, sampleRouter, SAMPLE_HZ);
 
-static NetworkCommandResult handleCommand(const char* command) {
-    JsonDocument doc;
-    if (deserializeJson(doc, command) != DeserializationError::Ok ||
-        !doc["type"].is<const char*>()) return {400, "INVALID_REQUEST"};
-    const char* type = doc["type"];
-    if (strcmp(type, "preset") == 0 && doc["value"].is<const char*>()) {
-        presetManager.setPreset(doc["value"].as<const char*>());
-        return {200, nullptr};
+static CommandResult monitorResult(const CommandRequest& request, ArchiveError error,
+                                   uint32_t targetRunId = 0) {
+    CommandResult result{};
+    memcpy(result.requestId, request.requestId, sizeof(result.requestId));
+    result.ok = error == ArchiveError::NONE;
+    result.error = error;
+    result.runId = runManager.runId();
+    result.runActive = runManager.active();
+    result.targetRunId = targetRunId;
+    return result;
+}
+
+static CommandResult handleCommand(const CommandRequest& request) {
+    if (request.command == CommandKind::Preset) {
+        if (strcmp(request.bootId, deviceIdentity.bootId) != 0)
+            return monitorResult(request, ArchiveError::STALE_COMMAND);
+        presetManager.setPreset(request.value);
+        return monitorResult(request, ArchiveError::NONE);
     }
-    if (strcmp(type, "run.start") == 0) {
-        if (runManager.active()) return {200, nullptr};
 #if defined(PYROVUE_BOARD_N16R8)
-        if (!archiveHardwareReady) return {503, "STORAGE_UNAVAILABLE"};
-#elif defined(PYROVUE_SINGLE_RUN_CSV)
+    return runLogger.handleCommand(request);
+#else
+    static char lastStartRequestId[81]{};
+    static uint32_t lastStartRunId = 0;
+    if (request.command == CommandKind::Start && lastStartRunId &&
+        strcmp(request.requestId, lastStartRequestId) == 0)
+        return monitorResult(request, ArchiveError::NONE, lastStartRunId);
+    if (strcmp(request.bootId, deviceIdentity.bootId) != 0)
+        return monitorResult(request, ArchiveError::STALE_COMMAND, request.targetRunId);
+    if (request.command == CommandKind::Start) {
+        if (request.afterRunId != runManager.runId())
+            return monitorResult(request, ArchiveError::STALE_COMMAND);
+        if (runManager.active())
+            return monitorResult(request, ArchiveError::RUN_ACTIVE);
+#if defined(PYROVUE_SINGLE_RUN_CSV)
         if (!csvRecorder.canStart()) {
             const auto status = csvRecorder.status();
-            if (status.hasRun) return {409, "SAVED_RUN_EXISTS"};
-            if (!status.mounted) return {503, "STORAGE_UNAVAILABLE"};
-            if (status.error) return {503, status.error};
-            return {507, "INSUFFICIENT_STORAGE"};
+            const ArchiveError error = status.hasRun ? ArchiveError::RUN_ID_CONFLICT :
+                !status.mounted ? ArchiveError::STORAGE_UNAVAILABLE :
+                status.error ? ArchiveError::WRITE_FAILED : ArchiveError::INSUFFICIENT_STORAGE;
+            return monitorResult(request, error);
         }
-#endif
-#if defined(PYROVUE_SINGLE_RUN_CSV)
-        const auto result = runManager.prepareRun(millis());
+        const auto start = runManager.prepareRun(millis());
 #else
-        const auto result = runManager.startRun(millis());
+        const auto start = runManager.startRun(millis());
 #endif
-        if (result == RunManager::START_STORE_FAILED) return {500, "RUN_ID_SAVE_FAILED"};
-        if (result == RunManager::START_ID_EXHAUSTED) return {409, "RUN_ID_EXHAUSTED"};
-        if (result != RunManager::START_STARTED) return {409, "RUN_ACTIVE"};
+        if (start == RunManager::START_STORE_FAILED)
+            return monitorResult(request, ArchiveError::RUN_ID_SAVE_FAILED);
+        if (start == RunManager::START_ID_EXHAUSTED)
+            return monitorResult(request, ArchiveError::RUN_ID_EXHAUSTED);
+        if (start != RunManager::START_STARTED)
+            return monitorResult(request, ArchiveError::RUN_ACTIVE);
 #if defined(PYROVUE_SINGLE_RUN_CSV)
         if (!csvRecorder.start(runManager.runId())) {
             runManager.abandonPreparedRun();
-            return {503, "WRITE_FAILED"};
+            return monitorResult(request, ArchiveError::WRITE_FAILED);
         }
         if (!runManager.activatePreparedRun()) {
             csvRecorder.stop(0);
             runManager.abandonPreparedRun();
-            return {500, "RUN_ACTIVATION_FAILED"};
+            return monitorResult(request, ArchiveError::WRITE_FAILED);
         }
 #endif
         historyStore.clear(runManager.runId());
-#if !defined(PYROVUE_BOARD_N16R8) && !defined(PYROVUE_SINGLE_RUN_CSV)
+#if !defined(PYROVUE_SINGLE_RUN_CSV)
         persistedBucketMs = 0xffffffffUL;
         historyPersistence.startRun(runManager.runId(), COARSE_BUCKET_MS);
 #endif
-        return {200, nullptr};
+        memcpy(lastStartRequestId, request.requestId, sizeof(lastStartRequestId));
+        lastStartRunId = runManager.runId();
+        return monitorResult(request, ArchiveError::NONE, lastStartRunId);
     }
-    if (strcmp(type, "run.stop") == 0) {
-        if (!runManager.active()) return {200, nullptr};
-        bool durable = true;
+    if (request.command != CommandKind::Stop)
+        return monitorResult(request, ArchiveError::INVALID_REQUEST);
+    if (!request.targetRunId || request.targetRunId != runManager.runId())
+        return monitorResult(request, ArchiveError::STALE_COMMAND, request.targetRunId);
+    if (!runManager.active())
+        return monitorResult(request, ArchiveError::NONE, request.targetRunId);
+    bool saved = true;
 #if defined(PYROVUE_SINGLE_RUN_CSV)
-        durable = csvRecorder.stop(runManager.elapsedMs(millis()));
+    saved = csvRecorder.stop(runManager.elapsedMs(millis()));
 #endif
-        runManager.stopRun();
-        historyStore.flush();
-#if !defined(PYROVUE_BOARD_N16R8) && !defined(PYROVUE_SINGLE_RUN_CSV)
-        persistLatestCoarse();
-        historyPersistence.flush();
+    runManager.stopRun();
+    historyStore.flush();
+#if !defined(PYROVUE_SINGLE_RUN_CSV)
+    persistLatestCoarse();
+    historyPersistence.flush();
 #endif
-        return durable ? NetworkCommandResult{200, nullptr}
-                       : NetworkCommandResult{503, "WRITE_FAILED"};
-    }
-    return {400, "INVALID_REQUEST"};
+    return monitorResult(request, saved ? ArchiveError::NONE : ArchiveError::WRITE_FAILED,
+                         request.targetRunId);
+#endif
+}
+#endif
+
+#if defined(PYROVUE_BOARD_N16R8)
+static void printHardwareStatus() {
+    NetworkStatusSnapshot status{};
+    runLogger.copyPublishedStatus(status);
+    Serial.printf("N16R8 flash=%lu psram=%lu fs=%s\n",
+                  static_cast<unsigned long>(ESP.getFlashChipSize()),
+                  static_cast<unsigned long>(esp_spiram_is_initialized() ? esp_spiram_get_size() : 0),
+                  status.storage.mounted ? "mounted" : "unavailable");
+    Serial.printf("N16R8 fs_label=spiffs total=%lu used=%lu psram_largest=%lu\n",
+                  static_cast<unsigned long>(status.storage.totalBytes),
+                  static_cast<unsigned long>(status.storage.usedBytes),
+                  static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
+    Serial.printf("N16R8 run=%lu active=%u durable_records=%lu error=%s\n",
+                  static_cast<unsigned long>(status.runId), status.runActive,
+                  static_cast<unsigned long>(status.logging.durableLogSeq),
+                  archiveErrorName(status.logging.error) ? archiveErrorName(status.logging.error) : "none");
+    const char* startError = archiveErrorName(runArchive.checkStart());
+    Serial.printf("N16R8 start=%s psram_heap=%lu\n", startError ? startError : "ready",
+                  static_cast<unsigned long>(ESP.getPsramSize()));
 }
 #endif
 
@@ -192,25 +257,29 @@ void setup() {
     Serial.begin(115200);
 #if defined(ARDUINO)
     runIdStore.begin();
-#if !defined(PYROVUE_SINGLE_RUN_CSV)
+#if !defined(PYROVUE_SINGLE_RUN_CSV) && !defined(PYROVUE_BOARD_N16R8)
     runManager.begin(millis());
 #endif
+    uint8_t mac[6]{};
+#if defined(ARDUINO_ARCH_ESP8266)
+    WiFi.macAddress(mac);
+    const uint32_t bootHigh = ESP.random(), bootLow = ESP.random();
+#else
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    const uint32_t bootHigh = esp_random(), bootLow = esp_random();
+#endif
+    snprintf(deviceIdentity.deviceId, sizeof(deviceIdentity.deviceId),
+             "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    snprintf(deviceIdentity.bootId, sizeof(deviceIdentity.bootId), "%08lx%08lx",
+             static_cast<unsigned long>(bootHigh), static_cast<unsigned long>(bootLow));
+    networkManager.setIdentity(deviceIdentity);
 #if defined(PYROVUE_BOARD_N16R8)
-    const uint32_t flashBytes = ESP.getFlashChipSize();
-    const uint32_t psramBytes = ESP.getPsramSize();
-    const bool fsMounted = LittleFS.begin(false, "/littlefs", 10, "spiffs");
-    archiveHardwareReady = flashBytes == 16777216UL && psramFound() &&
-                           psramBytes == 8388608UL && fsMounted;
-    Serial.printf("N16R8 flash=%lu psram=%lu fs=%s\n",
-                  static_cast<unsigned long>(flashBytes),
-                  static_cast<unsigned long>(psramBytes),
-                  fsMounted ? "mounted" : "unavailable");
-    Serial.printf("N16R8 fs_label=spiffs total=%lu used=%lu psram_largest=%lu\n",
-                  fsMounted ? static_cast<unsigned long>(LittleFS.totalBytes()) : 0UL,
-                  fsMounted ? static_cast<unsigned long>(LittleFS.usedBytes()) : 0UL,
-                  static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
-    if (!archiveHardwareReady) Serial.println("ERROR: Recorded Start unavailable; monitoring remains enabled");
-    Serial.println("N16R8 M1: monitor sessions only; durable run recording requires M2");
+    const ArchiveError archiveError = runLogger.begin(millis());
+    networkManager.setRunLogger(runLogger);
+    if (archiveError != ArchiveError::NONE)
+        Serial.printf("N16R8 logger unavailable: %s\n", archiveErrorName(archiveError));
+    Serial.println("N16R8: durable run recording; hardware/logging status at /api/info");
+    printHardwareStatus();
 #elif defined(PYROVUE_SINGLE_RUN_CSV)
     csvRecorder.begin();
     networkManager.setCsvRecorder(csvRecorder);
@@ -244,6 +313,10 @@ void setup() {
 void loop() {
 #if defined(ARDUINO)
     const uint32_t nowMs = millis();
+#if defined(PYROVUE_BOARD_N16R8)
+    const bool wasActive = runManager.active();
+    runLogger.enforceLimit(nowMs);
+#endif
 #if defined(PYROVUE_SINGLE_RUN_CSV)
     if (runManager.active()) {
         const uint32_t elapsedMs = runManager.elapsedMs(nowMs);
@@ -263,6 +336,18 @@ void loop() {
 #endif
 #if !defined(PYROVUE_SINGLE_RUN_CSV)
     sensorService.tick(nowMs);
+#endif
+#if defined(PYROVUE_BOARD_N16R8)
+    runLogger.poll(nowMs);
+    if (wasActive != runManager.active()) networkManager.broadcastRunState();
+    static bool serialConnected = false;
+    const bool connected = static_cast<bool>(Serial);
+    if (connected && !serialConnected) printHardwareStatus();
+    serialConnected = connected;
+    if (connected && Serial.available()) {
+        const int command = Serial.read();
+        if (command == 'i' || command == 'I') printHardwareStatus();
+    }
 #endif
     networkManager.loop();
 #endif
