@@ -73,6 +73,28 @@
             <button class="btn btn-ghost btn-compact" id="unitBtn" type="button" aria-label="Toggle &deg;C or &deg;F">&deg;C</button>
           </div>
         </div>
+        <div class="data-rows">
+          <section class="data-row" id="csvPanel" aria-label="Device CSV storage" hidden>
+            <div class="data-copy">
+              <p class="data-title" id="csvTitle">Device CSV</p>
+              <p class="status-line data-status" id="csvStatus" aria-live="polite">Checking device storage&hellip;</p>
+            </div>
+            <div class="controls">
+              <button class="btn" id="csvDownloadBtn" type="button" disabled>Download Temperatures</button>
+              <button class="btn btn-ghost" id="csvEraseBtn" type="button" disabled>Erase Saved Run</button>
+              <button class="btn btn-ghost" id="csvFormatBtn" type="button" hidden>Format Storage</button>
+            </div>
+          </section>
+          <section class="data-row" aria-label="Browser notes export">
+            <div class="data-copy">
+              <p class="data-title" id="notesTitle">Browser notes</p>
+              <p class="status-line data-status" id="notesStatus" aria-live="polite"></p>
+            </div>
+            <div class="controls">
+              <button class="btn btn-ghost" id="notesExportBtn" type="button">Download Notes CSV</button>
+            </div>
+          </section>
+        </div>
       </section>
       <aside class="cone-panel" id="coneWidget" data-model="unavailable" aria-label="Estimated cone unavailable">
         <div class="cone-heading">Estimated cone</div>
@@ -103,6 +125,7 @@
   <script src="./js/protocol.js"></script>
   <script src="./js/state.js"></script>
   <script src="./js/transport.js"></script>
+  <script src="./js/csv.js"></script>
   <script src="./js/metrics.js"></script>
   <script src="./js/cones.js"></script>
   <script src="./js/theme.js"></script>

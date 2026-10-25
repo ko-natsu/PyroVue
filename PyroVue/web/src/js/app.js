@@ -11,6 +11,9 @@
       typeof api.estimateConeProgress !== 'function' || typeof api.deriveHeatTheme !== 'function') {
     throw new Error('PyroVue graph, marker, cone and theme modules are required by the shell');
   }
+  if (typeof api.CsvHttpClient !== 'function' || typeof api.formatNotesCsv !== 'function') {
+    throw new Error('PyroVue csv module must load before the shell');
+  }
 
   const document = root.document;
   const store = new api.AppStore();
@@ -51,6 +54,15 @@
     started: document.getElementById('started'),
     inspectLine: document.getElementById('inspectLine'),
     toast: document.getElementById('toast'),
+    csvPanel: document.getElementById('csvPanel'),
+    csvTitle: document.getElementById('csvTitle'),
+    csvStatusLine: document.getElementById('csvStatus'),
+    csvDownloadButton: document.getElementById('csvDownloadBtn'),
+    csvEraseButton: document.getElementById('csvEraseBtn'),
+    csvFormatButton: document.getElementById('csvFormatBtn'),
+    notesTitle: document.getElementById('notesTitle'),
+    notesStatusLine: document.getElementById('notesStatus'),
+    notesExportButton: document.getElementById('notesExportBtn'),
   };
 
   /** @type {Storage | null} */
@@ -91,6 +103,38 @@
   /** @type {any} */
   let inspectedPoint = null;
   let renderPending = false;
+
+  // ---- Device CSV storage (Feather single-run) + browser notes export ----
+  // The device CSV run and the browser notes run are independent identities:
+  // a stale saved run survives reboot and may carry a different runId than the
+  // browser's current run. Temperature download/erase always bind to the
+  // authoritative GET /api/csv runId; notes export binds to the current run.
+  const csvClient = typeof root.fetch === 'function'
+    ? new api.CsvHttpClient(root.fetch.bind(root))
+    : null;
+  /** @type {null | ReturnType<typeof api.parseCsvStatus>} */
+  let csvStatus = null;
+  /** @type {boolean | null} null until discovery; false hides device controls */
+  let csvSupported = null;
+  /** @type {string | null} */
+  let csvStatusError = null;
+  let csvBusy = false;
+  let csvRefreshInFlight = false;
+  let csvLastAttemptMs = 0;
+  /** @type {ReturnType<typeof root.setInterval> | null} */
+  let csvPollTimer = null;
+
+  /** @param {number} runId */
+  function fmtRunLabel(runId) {
+    return `#${String(runId).padStart(4, '0')}`;
+  }
+
+  /** @param {number} bytes */
+  function fmtBytes(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`;
+    return `${Math.round(bytes / 1024)} KB`;
+  }
 
   /** @param {number} value */
   const toDisplayTemp = (value) => {
@@ -149,6 +193,176 @@
     });
   }
 
+  /** @param {unknown} error */
+  function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  async function refreshCsvStatus() {
+    if (destroyed || !csvClient || csvRefreshInFlight || csvSupported === false) return;
+    csvRefreshInFlight = true;
+    try {
+      const status = await csvClient.getStatus();
+      if (!status.supported) {
+        // 404 (or supported:false): this target has no device CSV storage.
+        csvSupported = false;
+        csvStatus = null;
+        csvStatusError = null;
+      } else {
+        const firstDiscovery = csvSupported !== true;
+        csvSupported = true;
+        csvStatus = status;
+        csvStatusError = null;
+        // Feather supports the durable HTTP command queue; legacy targets
+        // keep websocket-first commands forever.
+        if (firstDiscovery) transport.preferHttpCommands = true;
+      }
+    } catch (error) {
+      csvStatusError = errorMessage(error);
+    } finally {
+      csvLastAttemptMs = root.Date.now();
+      csvRefreshInFlight = false;
+      scheduleRender();
+    }
+  }
+
+  function csvPollTick() {
+    if (destroyed || !csvClient || csvSupported === false) return;
+    // Modest cadence: 5s while a run is active so recording failures show up
+    // quickly, 30s while idle so Start gating stays current.
+    const due = store.run.active || root.Date.now() - csvLastAttemptMs >= 30000;
+    if (due) void refreshCsvStatus();
+  }
+
+  function startCsvPolling() {
+    if (csvPollTimer !== null || destroyed || !csvClient) return;
+    csvPollTimer = root.setInterval(csvPollTick, 5000);
+  }
+
+  function stopCsvPolling() {
+    if (csvPollTimer !== null) root.clearInterval(csvPollTimer);
+    csvPollTimer = null;
+  }
+
+  /** @param {Blob} blob @param {string} filename */
+  function triggerDownload(blob, filename) {
+    const url = root.URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.rel = 'noopener';
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    root.setTimeout(() => root.URL.revokeObjectURL(url), 10000);
+  }
+
+  async function handleDownloadTemperatures() {
+    const status = csvStatus;
+    if (!csvClient || !status || csvBusy) return;
+    const blocks = api.csvActionBlocks(status);
+    if (blocks.download) {
+      showToast(blocks.download);
+      return;
+    }
+    // Bind to the authoritative device run id now: a reboot may leave a stale
+    // saved run whose id differs from the browser's current run.
+    const runId = status.runId;
+    csvBusy = true;
+    scheduleRender();
+    try {
+      const result = await csvClient.downloadRunCsv(runId);
+      triggerDownload(result.blob, result.filename);
+      showToast(`Downloaded ${result.filename}`);
+    } catch (error) {
+      showToast(errorMessage(error));
+    } finally {
+      csvBusy = false;
+      scheduleRender();
+      void refreshCsvStatus();
+    }
+  }
+
+  async function handleEraseSavedRun() {
+    const status = csvStatus;
+    if (!csvClient || !status || csvBusy) return;
+    const blocks = api.csvActionBlocks(status);
+    if (blocks.erase) {
+      showToast(blocks.erase);
+      return;
+    }
+    const runId = status.runId;
+    const label = runId > 0 ? `saved device run ${fmtRunLabel(runId)}` : 'saved device run (run ID unknown)';
+    const advice = runId > 0
+      ? 'Download the temperatures CSV and export your browser notes CSV first — erased data cannot be recovered.'
+      : 'This file is incomplete or corrupt and cannot be downloaded. Erasing it clears the way for new recordings; anything still inside is lost.';
+    const confirmed = root.confirm(`Erase the ${label}?\n\n${advice}`);
+    if (!confirmed) return;
+    csvBusy = true;
+    scheduleRender();
+    try {
+      await csvClient.eraseRun(runId);
+      showToast(`Erased the ${label} from the device`);
+    } catch (error) {
+      showToast(errorMessage(error));
+    } finally {
+      csvBusy = false;
+      scheduleRender();
+      await refreshCsvStatus();
+    }
+  }
+
+  async function handleFormatStorage() {
+    const status = csvStatus;
+    if (!csvClient || !status || csvBusy || status.mounted) return;
+    const confirmed = root.confirm(
+      'Format the device data partition (ffat)?\n\n'
+      + 'ALL data in the partition will be permanently erased — including any saved runs.',
+    );
+    if (!confirmed) return;
+    csvBusy = true;
+    scheduleRender();
+    try {
+      await csvClient.formatStorage();
+      showToast('Device storage formatted');
+    } catch (error) {
+      showToast(errorMessage(error));
+    } finally {
+      csvBusy = false;
+      scheduleRender();
+      await refreshCsvStatus();
+    }
+  }
+
+  function handleExportNotes() {
+    if (!markerStore) {
+      showToast('Marker storage unavailable in this browser');
+      return;
+    }
+    // Browser-selected current run, independent of the device CSV run.
+    const runId = store.run.id;
+    if (runId <= 0) {
+      showToast('No current run to export');
+      return;
+    }
+    const markers = markerStore.list(runId);
+    try {
+      const text = api.formatNotesCsv(runId, markers);
+      triggerDownload(
+        new root.Blob([text], { type: 'text/csv;charset=utf-8' }),
+        api.notesCsvFilename(runId),
+      );
+    } catch (error) {
+      showToast(errorMessage(error));
+      return;
+    }
+    if (api.notesNeedFormulaWarning(markers)) {
+      showToast(`Exported ${markers.length} note${markers.length === 1 ? '' : 's'} for run ${fmtRunLabel(runId)} — import the note column as text in spreadsheets`);
+    } else {
+      showToast(`Exported ${markers.length} note${markers.length === 1 ? '' : 's'} for run ${fmtRunLabel(runId)}`);
+    }
+  }
+
   function clearCommandTimers() {
     if (commandSyncTimer !== null) root.clearTimeout(commandSyncTimer);
     if (commandDeadlineTimer !== null) root.clearTimeout(commandDeadlineTimer);
@@ -195,8 +409,110 @@
     if (pendingCommand === 'start') elements.sessionButton.textContent = 'Starting…';
     else if (pendingCommand === 'stop') elements.sessionButton.textContent = 'Stopping…';
     else elements.sessionButton.textContent = active ? 'Stop Session' : 'Start Session';
-    elements.sessionButton.disabled = pendingCommand !== null;
+    let startBlock = null;
+    if (!active && pendingCommand === null && csvClient && csvSupported !== false) {
+      startBlock = csvStatusError
+        ? 'Cannot verify device storage — wait for reconnection'
+        : csvStatus ? api.csvActionBlocks(csvStatus).start : 'Checking device storage';
+    }
+    elements.sessionButton.disabled = pendingCommand !== null || startBlock !== null;
+    elements.sessionButton.title = startBlock
+      ?? (active ? 'Stop the current session' : 'Start a recording session');
     elements.sessionButton.dataset.intent = pendingCommand ? 'pending' : active ? 'stop' : 'start';
+  }
+
+  function renderCsvSection() {
+    const supported = csvClient !== null && csvSupported !== false;
+    if (elements.csvPanel) elements.csvPanel.hidden = !supported;
+    const status = supported ? csvStatus : null;
+    const blocks = status ? api.csvActionBlocks(status) : null;
+
+    if (elements.csvTitle) {
+      if (status && status.hasRun) {
+        elements.csvTitle.textContent = status.runId > 0
+          ? `Device CSV · run ${fmtRunLabel(status.runId)}`
+          : 'Device CSV · saved run ID unknown';
+      } else {
+        elements.csvTitle.textContent = 'Device CSV';
+      }
+    }
+    if (elements.csvStatusLine) {
+      let text = 'Checking device storage…';
+      let tone = '';
+      if (!status) {
+        if (csvStatusError) {
+          text = `Device CSV status unavailable — ${csvStatusError}`;
+          tone = 'error';
+        }
+      } else if (status.error || status.state === 'error') {
+        text = `Device storage error: ${status.error || 'recording failed'}`;
+        tone = 'error';
+      } else if (!status.mounted) {
+        text = 'Device storage not mounted — saved contents unknown; format erases the whole partition';
+        tone = 'warn';
+      } else if (status.recording) {
+        text = `Recording to device every ${status.logIntervalMs / 1000}s · ${status.sampleCount} samples · ${fmtBytes(status.bytes)}`;
+        tone = 'ok';
+      } else if (status.hasRun) {
+        const identity = status.runId > 0
+          ? `run ${fmtRunLabel(status.runId)}`
+          : 'run ID unknown (incomplete or corrupt)';
+        text = `Saved device ${identity} (${status.state.replace('_', ' ')}) · ${status.sampleCount} samples · ${fmtBytes(status.bytes)}${blocks?.download ? '' : ' · ready to download'}`;
+        tone = status.state === 'interrupted' || status.state === 'duration_limit' ? 'warn' : 'ok';
+      } else if (status.freeBytes < status.startRequiredBytes) {
+        text = `Storage low — ${fmtBytes(status.freeBytes)} free, ${fmtBytes(status.startRequiredBytes)} needed to start`;
+        tone = 'warn';
+      } else {
+        text = `No saved run · ${fmtBytes(status.freeBytes)} free`;
+      }
+      if (status && csvStatusError) {
+        text += ` · status refresh failing: ${csvStatusError}`;
+        tone = 'warn';
+      }
+      elements.csvStatusLine.textContent = text;
+      elements.csvStatusLine.dataset.tone = tone;
+    }
+    if (elements.csvDownloadButton) {
+      elements.csvDownloadButton.disabled = csvBusy || !blocks || blocks.download !== null;
+      elements.csvDownloadButton.title = blocks?.download
+        ?? (status
+          ? `Download run-${status.runId}-temperatures.csv for device run ${fmtRunLabel(status.runId)}`
+          : 'No saved device run to download');
+    }
+    if (elements.csvEraseButton) {
+      elements.csvEraseButton.disabled = csvBusy || !blocks || blocks.erase !== null;
+      elements.csvEraseButton.title = blocks?.erase ?? 'Erase the saved device run after downloading both files';
+    }
+    if (elements.csvFormatButton) {
+      elements.csvFormatButton.hidden = !(status && !status.mounted);
+      elements.csvFormatButton.disabled = csvBusy;
+      elements.csvFormatButton.title = 'Provision storage: erases the ENTIRE ffat data partition';
+    }
+
+    const notesRunId = store.run.id;
+    if (elements.notesTitle) {
+      elements.notesTitle.textContent = notesRunId > 0
+        ? `Browser notes · run ${fmtRunLabel(notesRunId)}`
+        : 'Browser notes';
+    }
+    if (elements.notesStatusLine) {
+      let text = markerStore
+        ? 'Saved in this browser only — never on the device'
+        : 'Browser note storage unavailable — notes cannot be exported';
+      let tone = markerStore ? '' : 'warn';
+      if (markerStore && api.notesNeedFormulaWarning(visibleMarkers)) {
+        text += ' · some notes start with =, +, -, or @ — import the note column as text in spreadsheets';
+        tone = 'warn';
+      }
+      elements.notesStatusLine.textContent = text;
+      elements.notesStatusLine.dataset.tone = tone;
+    }
+    if (elements.notesExportButton) {
+      elements.notesExportButton.disabled = !markerStore || notesRunId <= 0;
+      elements.notesExportButton.title = notesRunId > 0
+        ? `Download run-${notesRunId}-notes.csv (browser notes for run ${fmtRunLabel(notesRunId)}, ${visibleMarkers.length} notes)`
+        : 'No current run selected';
+    }
   }
 
   /** @param {ReadonlyArray<any>} points */
@@ -483,6 +799,7 @@
     }
 
     renderSessionControl();
+    renderCsvSection();
     if (elements.markerButton) {
       const ready = !!markerStore && run.active && reading?.source === 'live'
         && reading.sample.runId === run.id && freshness.telemetry === 'fresh';
@@ -524,6 +841,12 @@
       pendingCommand = null;
       renderSessionControl();
       showToast(error instanceof Error ? error.message : String(error));
+      void transport.syncState().catch((/** @type {unknown} */ stateError) => {
+        store.lastError = errorMessage(stateError);
+        store.emit('transport.error');
+      });
+    } finally {
+      void refreshCsvStatus();
     }
   }
 
@@ -547,6 +870,10 @@
   applyTheme(theme);
 
   elements.sessionButton?.addEventListener('click', () => void handleSessionButton());
+  elements.csvDownloadButton?.addEventListener('click', () => void handleDownloadTemperatures());
+  elements.csvEraseButton?.addEventListener('click', () => void handleEraseSavedRun());
+  elements.csvFormatButton?.addEventListener('click', () => void handleFormatStorage());
+  elements.notesExportButton?.addEventListener('click', handleExportNotes);
   elements.markerButton?.addEventListener('click', captureMarker);
   elements.markersToggle?.addEventListener('click', () => showMarkerPanel(!!elements.markersPanel?.hidden));
   elements.markersClose?.addEventListener('click', () => showMarkerPanel(false));
@@ -601,11 +928,28 @@
   root.addEventListener('pagehide', () => {
     destroyed = true;
     clearCommandTimers();
+    stopCsvPolling();
     transport.stop();
     renderer.destroy();
   }, { once: true });
 
   store.subscribe(scheduleRender);
+  // Device CSV status refreshes on reconnect and whenever the session state
+  // flips, so recording failures stay visible and Start gating stays honest.
+  let lastConnectionPhase = store.connection.phase;
+  let lastRunActive = store.run.active;
+  store.subscribe(() => {
+    const phase = store.connection.phase;
+    if (phase !== lastConnectionPhase) {
+      const wasDown = lastConnectionPhase === 'disconnected' || lastConnectionPhase === 'connecting';
+      lastConnectionPhase = phase;
+      if (wasDown && phase !== 'disconnected' && phase !== 'connecting') void refreshCsvStatus();
+    }
+    if (store.run.active !== lastRunActive) {
+      lastRunActive = store.run.active;
+      void refreshCsvStatus();
+    }
+  });
   document.fonts?.ready.then(scheduleRender);
   root.setInterval(scheduleRender, 1000);
 
@@ -615,4 +959,6 @@
   root.pyroVueApp = Object.freeze({ store, transport, renderer, setExpanded });
   scheduleRender();
   transport.start();
+  startCsvPolling();
+  void refreshCsvStatus();
 })(/** @type {any} */ (globalThis));

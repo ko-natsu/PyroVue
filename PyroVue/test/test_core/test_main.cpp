@@ -48,6 +48,65 @@ static void test_run_rollover_and_lifecycle() {
     TEST_ASSERT_EQUAL(1, store.writes);
 }
 
+static void test_run_identity_failure_and_exhaustion_do_not_activate() {
+    struct FailingStore : IRunIdStore {
+        bool loadRunId(uint32_t& out) override { out = 12; return true; }
+        bool saveRunId(uint32_t) override { return false; }
+    } failed;
+    RunManager run(&failed);
+    run.begin(0);
+    TEST_ASSERT_EQUAL(RunManager::START_STORE_FAILED, run.startRun(100));
+    TEST_ASSERT_FALSE(run.active());
+    TEST_ASSERT_EQUAL_UINT32(12, run.runId());
+    MemoryRunStore exhausted;
+    exhausted.value = UINT32_MAX;
+    RunManager full(&exhausted);
+    full.begin(0);
+    TEST_ASSERT_EQUAL(RunManager::START_ID_EXHAUSTED, full.startRun(100));
+    TEST_ASSERT_FALSE(full.active());
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, full.runId());
+    TEST_ASSERT_EQUAL_INT(0, exhausted.writes);
+}
+
+static void test_prepared_run_stays_idle_until_durable_activation() {
+    MemoryRunStore store;
+    store.value = 3;
+    RunManager run(&store);
+    run.begin(0, 9);
+    TEST_ASSERT_EQUAL(RunManager::START_STARTED, run.prepareRun(1000, 12));
+    TEST_ASSERT_FALSE(run.active());
+    TEST_ASSERT_EQUAL_UINT32(12, run.runId());
+    TEST_ASSERT_EQUAL_UINT32(12, store.value);
+    FakeReader reader;
+    FakeSink sink;
+    SensorService service(reader, run, sink, 2);
+    TEST_ASSERT_TRUE(service.begin());
+    TEST_ASSERT_TRUE(service.tick(1500));
+    TEST_ASSERT_EQUAL_UINT32(0, sink.last.runId);
+    TEST_ASSERT_TRUE(run.activatePreparedRun());
+    TEST_ASSERT_TRUE(service.tick(2000));
+    TEST_ASSERT_EQUAL_UINT32(12, sink.last.runId);
+    TEST_ASSERT_EQUAL_UINT32(1, sink.last.seq);
+    TEST_ASSERT_EQUAL_UINT32(1000, sink.last.ms);
+    TEST_ASSERT_FALSE(run.activatePreparedRun());
+    TEST_ASSERT_EQUAL_UINT32(2, run.nextSequence());
+}
+
+static void test_abandoned_preparation_never_reuses_its_identity() {
+    MemoryRunStore store;
+    RunManager run(&store);
+    run.begin(0);
+    TEST_ASSERT_EQUAL(RunManager::START_STARTED, run.prepareRun(1000));
+    run.abandonPreparedRun();
+    TEST_ASSERT_FALSE(run.active());
+    TEST_ASSERT_FALSE(run.activatePreparedRun());
+    TEST_ASSERT_EQUAL(RunManager::START_STARTED, run.prepareRun(2000));
+    TEST_ASSERT_EQUAL_UINT32(2, run.runId());
+    TEST_ASSERT_EQUAL_INT(2, store.writes);
+    TEST_ASSERT_TRUE(run.activatePreparedRun());
+    TEST_ASSERT_EQUAL_UINT32(500, run.elapsedMs(2500));
+}
+
 static void test_history_wrap_and_bucket_aggregation() {
     TempSample raw[3];
     CoarseSample coarse[4];
@@ -290,6 +349,9 @@ static void test_journal_in_place_encoding_preserves_payload() {
 void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_run_rollover_and_lifecycle);
+    RUN_TEST(test_run_identity_failure_and_exhaustion_do_not_activate);
+    RUN_TEST(test_prepared_run_stays_idle_until_durable_activation);
+    RUN_TEST(test_abandoned_preparation_never_reuses_its_identity);
     RUN_TEST(test_history_wrap_and_bucket_aggregation);
     RUN_TEST(test_idle_samples_update_latest_without_history);
     RUN_TEST(test_sensor_service_cadence_and_fault_normalization);

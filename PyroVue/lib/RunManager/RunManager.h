@@ -2,6 +2,7 @@
 #define RUN_MANAGER_H
 
 #include <stdint.h>
+#include <atomic>
 #include "SensorService.h"
 
 // Portable run-identity storage seam. Device firmware supplies an
@@ -25,9 +26,8 @@ public:
 // the caller; begin() only recovers identity, never an active run.
 //
 // Sequencing rules:
-//   - runId increases by exactly 1 per successful startRun() and is persisted
-//     to the IRunIdStore once per start (best effort; a failed save does not
-//     abort the run, the in-memory id is still authoritative until next boot).
+//   - prepareRun durably allocates a new ID while remaining inactive. A failed
+//     save leaves identity/state unchanged; abandoning preparation never reuses it.
 //   - The per-run sequence is monotonic within a run and resets to 0 at every
 //     startRun(); nextSequence() returns 1, 2, 3, ... during a run.
 //
@@ -50,6 +50,8 @@ public:
 // Results returned by startRun():
 //   START_STARTED         - new run began (id incremented and persisted).
 //   START_ALREADY_ACTIVE  - rejected, a run is already active.
+//   START_STORE_FAILED    - identity persistence failed; no run activated.
+//   START_ID_EXHAUSTED    - uint32 identity space exhausted; never reuse an ID.
 //
 // Results returned by stopRun():
 //   STOP_OK               - active run stopped.
@@ -72,21 +74,16 @@ public:
     // the initial run id at 0 and saves are skipped.
     explicit RunManager(IRunIdStore* store = nullptr);
 
-    // Recover identity at boot. Loads the stored run id when available.
-    // Never resumes an active run: active() is false afterwards regardless
-    // of any persisted state, and startMs/sequence start fresh on the next
-    // startRun(). Safe to call at most once per boot, before any start.
-    void begin(uint32_t nowMs);
+    // Recover the maximum of stored identity and a validated saved-run floor.
+    // Never resume a run. Call once per boot before preparing/starting.
+    void begin(uint32_t nowMs, uint32_t minimumRunId = 0);
 
     // Start a run: increments the run id, persists it once, stamps startMs
     // from nowMs and resets the sequence. See repeated-start rules above.
     StartResult startRun(uint32_t nowMs);
 
-    // Frozen M2 declarations only; not callable until the durable lifecycle
-    // implementation lands. M2 folds begin's catalog argument into the existing
-    // begin(nowMs, minimumRunId=0) entry point and removes the one-argument
-    // definition above; current monitor lifecycle remains implemented unchanged.
-    void begin(uint32_t nowMs, uint32_t minimumRunId);
+    // Persist identity first, then let a storage owner prepare/sync its file.
+    // Activation performs no I/O and uses the original preparation timestamp.
     StartResult prepareRun(uint32_t nowMs, uint32_t minimumNextRunId = 0);
     bool activatePreparedRun();
     void abandonPreparedRun();
@@ -118,7 +115,9 @@ private:
     uint32_t startMs;     // nowMs captured at startRun()
     uint32_t seq;         // per-run sequence counter
     mutable uint32_t frozenMs; // last elapsedMs() reading; frozen at stopRun()
-    bool running;
+    uint32_t preparedStartMs;
+    std::atomic<bool> running;
+    bool prepared;
 };
 
 #endif // RUN_MANAGER_H

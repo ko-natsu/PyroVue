@@ -1,14 +1,18 @@
 #include "RunManager.h"
 
 RunManager::RunManager(IRunIdStore* storeRef)
-    : store(storeRef), id(0), startMs(0), seq(0), frozenMs(0), running(false) {
+    : store(storeRef), id(0), startMs(0), seq(0), frozenMs(0),
+      preparedStartMs(0), running(false), prepared(false) {
 }
 
-void RunManager::begin(uint32_t nowMs) {
+void RunManager::begin(uint32_t nowMs, uint32_t minimumRunId) {
     (void)nowMs; // identity recovery only; no active state is resumed
     id = 0;
     startMs = 0;
     seq = 0;
+    frozenMs = 0;
+    preparedStartMs = 0;
+    prepared = false;
     running = false;
     if (store != nullptr) {
         uint32_t stored = 0;
@@ -16,22 +20,39 @@ void RunManager::begin(uint32_t nowMs) {
             id = stored;
         }
     }
+    if (id < minimumRunId) id = minimumRunId;
+}
+
+RunManager::StartResult RunManager::prepareRun(uint32_t nowMs, uint32_t minimumNextRunId) {
+    if (running || prepared) return START_ALREADY_ACTIVE;
+    if (id == UINT32_MAX) return START_ID_EXHAUSTED;
+    uint32_t nextId = id + 1;
+    if (nextId < minimumNextRunId) nextId = minimumNextRunId;
+    if (store != nullptr && !store->saveRunId(nextId)) return START_STORE_FAILED;
+    id = nextId;
+    preparedStartMs = nowMs;
+    prepared = true;
+    return START_STARTED;
+}
+
+bool RunManager::activatePreparedRun() {
+    if (!prepared || running) return false;
+    startMs = preparedStartMs;
+    seq = 0;
+    frozenMs = 0;
+    prepared = false;
+    running = true;
+    return true;
+}
+
+void RunManager::abandonPreparedRun() {
+    prepared = false;
 }
 
 RunManager::StartResult RunManager::startRun(uint32_t nowMs) {
-    if (running) {
-        return START_ALREADY_ACTIVE;
-    }
-    ++id;
-    if (id == 0) ++id;
-    if (store != nullptr) {
-        (void)store->saveRunId(id);
-    }
-    startMs = nowMs;
-    seq = 0;
-    frozenMs = 0;
-    running = true;
-    return START_STARTED;
+    const auto result = prepareRun(nowMs);
+    if (result == START_STARTED) activatePreparedRun();
+    return result;
 }
 
 RunManager::StopResult RunManager::stopRun() {

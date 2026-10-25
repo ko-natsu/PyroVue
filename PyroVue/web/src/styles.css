@@ -620,6 +620,63 @@ body {
   flex-wrap: wrap;
 }
 
+/* ---------- Device CSV storage + browser notes export rows ---------- */
+
+.data-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+  flex-wrap: wrap;
+}
+
+.data-row[hidden] {
+  display: none;
+}
+
+.data-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 260px;
+}
+
+.data-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+/* Long CSV action labels stack into full-width touch targets on small screens. */
+@media (max-width: 820px) {
+  .data-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .data-row .data-copy {
+    flex: 0 1 auto;
+  }
+
+  .data-row .controls {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .data-row .controls .btn {
+    width: 100%;
+    min-height: 48px;
+  }
+}
+
 /* ---------- Buttons: tactile, thin-lined, touch-first ---------- */
 
 .btn {

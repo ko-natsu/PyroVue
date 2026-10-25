@@ -10,7 +10,7 @@
   class DeviceTransport {
     /**
      * @param {InstanceType<typeof api.AppStore>} store
-     * @param {{WebSocket?:any, fetch?:typeof fetch, location?:{protocol:string,host:string}, setTimeout?:typeof setTimeout, clearTimeout?:typeof clearTimeout, setInterval?:typeof setInterval, clearInterval?:typeof clearInterval, reconnectBaseMs?:number, reconnectMaxMs?:number, pollMs?:number}} [options]
+     * @param {{WebSocket?:any, fetch?:typeof fetch, location?:{protocol:string,host:string}, setTimeout?:typeof setTimeout, clearTimeout?:typeof clearTimeout, setInterval?:typeof setInterval, clearInterval?:typeof clearInterval, reconnectBaseMs?:number, reconnectMaxMs?:number, pollMs?:number, preferHttpCommands?:boolean}} [options]
      */
     constructor(store, options = {}) {
       this.store = store;
@@ -24,6 +24,11 @@
       this.reconnectBaseMs = options.reconnectBaseMs || 500;
       this.reconnectMaxMs = options.reconnectMaxMs || 10000;
       this.pollMs = options.pollMs || 1000;
+      // Durable control channel preference. Defaults to false so legacy
+      // targets keep websocket-first commands; the app flips this to true once
+      // the device advertises single-run CSV support (Feather) where the HTTP
+      // command route returns honest, queued execution status.
+      this.preferHttpCommands = options.preferHttpCommands === true;
       this.socket = null;
       this.reconnectTimer = null;
       this.pollTimer = null;
@@ -161,6 +166,19 @@
       this.store.emit('transport.error');
     }
 
+    /**
+     * Reads a failed command response body for a meaningful device detail.
+     * @param {any} response
+     */
+    async readCommandError(response) {
+      if (!response || typeof response.json !== 'function') return null;
+      try {
+        return api.readErrorDetail(await response.json());
+      } catch {
+        return null;
+      }
+    }
+
     /** @param {Readonly<{type:string, value?:string}>} command */
     async send(command) {
       const validated = api.createCommand(command.type, command.value);
@@ -170,17 +188,26 @@
       const openState = this.WebSocketClass && this.WebSocketClass.OPEN !== undefined
         ? this.WebSocketClass.OPEN
         : 1;
-      if (this.socket && this.socket.readyState === openState) {
-        this.socket.send(payload);
-        return Object.freeze({ channel: 'websocket', pending: true });
+      const socketReady = Boolean(this.socket && this.socket.readyState === openState);
+      const useHttp = Boolean(this.fetchFn) && (this.preferHttpCommands || !socketReady);
+      if (!useHttp) {
+        if (socketReady) {
+          this.socket.send(payload);
+          return Object.freeze({ channel: 'websocket', pending: true });
+        }
+        throw new Error('no command transport available');
       }
-      if (!this.fetchFn) throw new Error('no command transport available');
       const response = await this.fetchFn('/api/cmd', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: payload,
       });
-      if (!response.ok) throw new Error(`POST /api/cmd returned ${response.status}`);
+      if (!response.ok) {
+        const detail = await this.readCommandError(response);
+        throw new api.ProtocolError(
+          `command rejected (HTTP ${response.status})${detail ? `: ${detail}` : ''}`,
+        );
+      }
       return Object.freeze({ channel: 'http', pending: true });
     }
   }

@@ -158,43 +158,49 @@ void NetworkManager::broadcastRunState() {
     ws.textAll(json);
 }
 
-void NetworkManager::sendCommand(const uint8_t* data, size_t len) {
-    if (!onCommand || len == 0 || len > 256) return;
-    char command[257];
-    memcpy(command, data, len);
-    command[len] = '\0';
-    if (onCommand(String(command))) broadcastRunState();
+void NetworkManager::sendError(const char* code) {
+    JsonDocument doc;
+    doc["type"] = "error";
+    doc["protocol"] = PROTOCOL_VERSION;
+    doc["code"] = code;
+    String json;
+    serializeJson(doc, json);
+    ws.textAll(json);
 }
 
 void NetworkManager::handleWsEvent(AsyncWebSocketClient* client, AwsEventType type,
                                    void* arg, uint8_t* data, size_t len) {
     if (type == WS_EVT_CONNECT) {
-        replaying = true;
+        if (!monitorGate.tryEnter()) {
+            client->close(1013, "BUSY");
+            return;
+        }
         sendStateJson(client);
         sendSnapshot(client);
+        monitorGate.leave();
         return;
     }
     if (type == WS_EVT_DATA) {
         AwsFrameInfo* info = static_cast<AwsFrameInfo*>(arg);
         if (info && info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
-            sendCommand(data, len);
+            if (!requests.enqueueCommand(data, len)) sendError("BUSY_OR_INVALID_COMMAND");
         }
     }
 }
 
-void NetworkManager::begin() {
-    WiFi.softAP(WIFI_SSID, WIFI_PASSWORD, AP_CHANNEL);
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
-        AsyncWebServerResponse* response = request->beginResponse(200, "text/html", UI_INDEX_GZ, UI_INDEX_GZ_LEN);
-        response->addHeader("Content-Encoding", "gzip");
-        request->send(response);
-    });
-    server.on("/api/now", HTTP_GET, [this](AsyncWebServerRequest* request) {
-        JsonDocument doc;
+void NetworkManager::sendDeviceState(AsyncWebServerRequest* request, bool info) {
+    JsonDocument doc;
+    doc["protocol"] = PROTOCOL_VERSION;
+    doc["runId"] = runManager.runId();
+    doc["runActive"] = runManager.active();
+    if (info) {
+        doc["type"] = "hello";
+        doc["firmware"] = FIRMWARE_VERSION;
+        doc["sampleHz"] = SAMPLE_HZ;
+        doc["clients"] = ws.count();
+        doc["preset"] = presetManager.getPreset();
+    } else {
         doc["type"] = "state";
-        doc["protocol"] = PROTOCOL_VERSION;
-        doc["runId"] = runManager.runId();
-        doc["runActive"] = runManager.active();
         TempSample sample{};
         if (historyStore.latestReading(sample)) {
             doc["type"] = "sample";
@@ -204,33 +210,25 @@ void NetworkManager::begin() {
             doc["temp"] = sample.tempC;
             doc["fault"] = sample.fault;
         }
-        String json;
-        serializeJson(doc, json);
-        request->send(200, "application/json", json);
+    }
+    auto* response = request->beginResponseStream("application/json", 512);
+    serializeJson(doc, *response);
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+}
+
+void NetworkManager::begin() {
+    WiFi.softAP(WIFI_SSID, WIFI_PASSWORD, AP_CHANNEL);
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+        AsyncWebServerResponse* response = request->beginResponse(200, "text/html", UI_INDEX_GZ, UI_INDEX_GZ_LEN);
+        response->addHeader("Content-Encoding", "gzip");
+        request->send(response);
     });
-    server.on("/api/info", HTTP_GET, [this](AsyncWebServerRequest* request) {
-        JsonDocument doc;
-        doc["type"] = "hello";
-        doc["protocol"] = PROTOCOL_VERSION;
-        doc["firmware"] = FIRMWARE_VERSION;
-        doc["sampleHz"] = SAMPLE_HZ;
-        doc["runId"] = runManager.runId();
-        doc["runActive"] = runManager.active();
-        doc["clients"] = ws.count();
-        doc["preset"] = presetManager.getPreset();
-        String json;
-        serializeJson(doc, json);
-        request->send(200, "application/json", json);
-    });
-    server.on("/api/cmd", HTTP_POST, [](AsyncWebServerRequest* request) {}, nullptr,
-        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-            if (index != 0 || len != total || total > 256) {
-                request->send(400, "text/plain", "Bad Request");
-                return;
-            }
-            sendCommand(data, len);
-            request->send(200, "text/plain", "OK");
-        });
+    requests.begin(server, onCommand, [this]() { broadcastRunState(); },
+                   [this](const char* code) { sendError(code); },
+                   [this]() { return monitorGate.tryEnter(); },
+                   [this]() { monitorGate.leave(); },
+                   [this](AsyncWebServerRequest* request, bool info) { sendDeviceState(request, info); });
     ws.onEvent([this](AsyncWebSocket* serverRef, AsyncWebSocketClient* client,
                      AwsEventType type, void* arg, uint8_t* data, size_t len) {
         (void)serverRef;
@@ -241,6 +239,7 @@ void NetworkManager::begin() {
 }
 
 void NetworkManager::loop() {
+    requests.poll();
     ws.cleanupClients(WS_MAX_CLIENTS);
 }
 void NetworkManager::onNewSample(const TempSample& sample) {

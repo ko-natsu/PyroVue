@@ -208,6 +208,42 @@
     });
   }
 
+  /** @param {Record<string, any>} source @param {string[]} parts */
+  function collectErrorParts(source, parts) {
+    if (typeof source.code === 'string' && source.code.length > 0) parts.push(source.code);
+    if (typeof source.message === 'string' && source.message.length > 0) parts.push(source.message);
+    else if (typeof source.error === 'string' && source.error.length > 0) parts.push(source.error);
+  }
+
+  /**
+   * Extracts a human-meaningful detail from a device error payload. Accepts the
+   * WS `error` message shape ({code}), HTTP JSON error bodies ({error} or
+   * {code, message}), or a plain-text body. Returns null when nothing useful
+   * is present so callers can fall back to the HTTP status alone.
+   * @param {unknown} body
+   * @returns {string | null}
+   */
+  function readErrorDetail(body) {
+    if (typeof body === 'string') {
+      const trimmed = body.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+    const source = /** @type {Record<string, any>} */ (body);
+    /** @type {string[]} */
+    const parts = [];
+    collectErrorParts(source, parts);
+    if (source.error && typeof source.error === 'object' && !Array.isArray(source.error)) {
+      collectErrorParts(/** @type {Record<string, any>} */ (source.error), parts);
+    }
+    /** @type {string[]} */
+    const unique = [];
+    for (const part of parts) {
+      if (!unique.includes(part)) unique.push(part);
+    }
+    return unique.length > 0 ? unique.join(': ') : null;
+  }
+
   /** @param {'run.start' | 'run.stop' | 'preset'} type @param {string} [value] */
   function createCommand(type, value) {
     if (type === 'run.start' || type === 'run.stop') return Object.freeze({ type });
@@ -224,5 +260,6 @@
     parseMessage,
     decodeFaults,
     createCommand,
+    readErrorDetail,
   });
 })(/** @type {any} */ (globalThis));

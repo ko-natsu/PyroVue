@@ -180,3 +180,17 @@ test('syncState reconciles over HTTP while websocket stays connected', async () 
   assert.equal(store.currentReading.sample.seq, 8);
   transport.stop();
 });
+
+test('a refused durable command rejects instead of reporting transport acceptance', async () => {
+  const store = new AppStore();
+  const transport = new DeviceTransport(store, {
+    preferHttpCommands: true,
+    fetch: async () => new Response(JSON.stringify({ code: 'STORAGE_UNAVAILABLE' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  });
+  await assert.rejects(transport.send(createCommand('run.start')), globalThis.PyroVue.ProtocolError);
+  assert.equal(store.run.active, false);
+});
+
